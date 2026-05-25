@@ -22,6 +22,7 @@ if (enteredPassword !== ACCESS_PASSWORD) {
   throw new Error("Acceso denegado");
 }
 import * as BABYLON from "babylonjs";
+import "babylonjs-loaders";
 
 // Canvas
 const canvas = document.createElement("canvas");
@@ -1924,6 +1925,63 @@ function createCentrixBillboardAtLonLat(lon: number, lat: number) {
 
   return sign;
 }
+async function loadCarModel(
+  fileName: string,
+  position: BABYLON.Vector3
+) {
+  car = BABYLON.MeshBuilder.CreateBox(
+    "carCollider",
+    { width: 2.8, height: 1.4, depth: 4.4 },
+    scene
+  );
+
+  car.position = position.clone();
+  car.position.y = 0.18;
+  car.isVisible = false;
+
+  try {
+    const result = await BABYLON.SceneLoader.ImportMeshAsync(
+      "",
+      "/models/",
+      fileName,
+      scene
+    );
+
+    const carRoot = new BABYLON.TransformNode("importedCarRoot", scene);
+    carRoot.parent = car;
+
+    for (const mesh of result.meshes) {
+      if (mesh instanceof BABYLON.Mesh) {
+        mesh.parent = carRoot;
+        mesh.setEnabled(true);
+      }
+    }
+
+    // AJUSTES DEL MODELO
+    carRoot.position = new BABYLON.Vector3(0, 0, 0);
+    carRoot.scaling = new BABYLON.Vector3(0.5, 0.5, 0.5);
+
+    // Si mira al revés, cambia esto a 0 o Math.PI
+    carRoot.rotation.y = Math.PI;
+
+    console.log("Auto GLB cargado correctamente:", fileName);
+  } catch (error) {
+    console.error("No se pudo cargar el auto GLB:", error);
+
+    // Auto rojo de emergencia para saber que el collider existe
+    const fallback = BABYLON.MeshBuilder.CreateBox(
+      "fallbackCar",
+      { width: 2.8, height: 1, depth: 4.4 },
+      scene
+    );
+
+    fallback.position.y = 0.5;
+    fallback.parent = car;
+
+    const fallbackMat = mat("fallbackCarMat", new BABYLON.Color3(1, 0, 0));
+    fallback.material = fallbackMat;
+  }
+}
 async function loadMap(fileName = "miraflores-28-julio.geojson") {
   const response = await fetch(`/data/${fileName}`);
 
@@ -2114,8 +2172,13 @@ createWebAuraAtLonLat(
   -12.129906426232017
 );
   createAvatar(new BABYLON.Vector3(0, 1, 20));
-  createMiniCooper(new BABYLON.Vector3(4, 0.18, 20));
-  createMissionSystem();
+
+await loadCarModel(
+  "miniCooper.glb",
+  new BABYLON.Vector3(4, 0.18, 20)
+);
+
+createMissionSystem();
 
   createBotAtLonLat("bot1", -77.0305, -12.1218, new BABYLON.Color3(0.8, 0.2, 0.2));
   createBotWalkingBetweenCoords("botDiagonal1", -77.0300918818036, -12.120575144534602, -77.02944005390489, -12.119730558889549, new BABYLON.Color3(1, 0.4, 0.1));
