@@ -21,8 +21,8 @@ if (enteredPassword !== ACCESS_PASSWORD) {
 
   throw new Error("Acceso denegado");
 }
-import * as BABYLON from "babylonjs";
-import "babylonjs-loaders";
+import * as BABYLON from "@babylonjs/core";
+import "@babylonjs/loaders/glTF";
 
 // Canvas
 const canvas = document.createElement("canvas");
@@ -1925,10 +1925,7 @@ function createCentrixBillboardAtLonLat(lon: number, lat: number) {
 
   return sign;
 }
-async function loadCarModel(
-  fileName: string,
-  position: BABYLON.Vector3
-) {
+async function loadCarModel(fileName: string, position: BABYLON.Vector3) {
   car = BABYLON.MeshBuilder.CreateBox(
     "carCollider",
     { width: 2.8, height: 1.4, depth: 4.4 },
@@ -1939,36 +1936,69 @@ async function loadCarModel(
   car.position.y = 0.18;
   car.isVisible = false;
 
+  const modelUrl = `/models/${fileName}`;
+
   try {
+    const test = await fetch(modelUrl);
+    console.log("Probando modelo:", modelUrl, test.status, test.statusText);
+
+    if (!test.ok) {
+      throw new Error(`No se encontró el archivo: ${modelUrl}`);
+    }
+
     const result = await BABYLON.SceneLoader.ImportMeshAsync(
-      "",
+      null,
       "/models/",
       fileName,
       scene
     );
 
+    let totalVertices = 0;
+
+for (const mesh of result.meshes) {
+  if (mesh instanceof BABYLON.Mesh) {
+    totalVertices += mesh.getTotalVertices();
+  }
+}
+
+console.log("Vértices del auto:", totalVertices);
+console.log("Meshes del auto:", result.meshes.length);
+
+    console.log("Auto importado:", result.meshes.length, result.meshes);
+
     const carRoot = new BABYLON.TransformNode("importedCarRoot", scene);
     carRoot.parent = car;
 
     for (const mesh of result.meshes) {
-      if (mesh instanceof BABYLON.Mesh) {
-        mesh.parent = carRoot;
-        mesh.setEnabled(true);
-      }
-    }
 
-    // AJUSTES DEL MODELO
-    carRoot.position = new BABYLON.Vector3(0, 0, 0);
-    carRoot.scaling = new BABYLON.Vector3(0.5, 0.5, 0.5);
+  if (mesh instanceof BABYLON.Mesh) {
 
-    // Si mira al revés, cambia esto a 0 o Math.PI
-    carRoot.rotation.y = Math.PI;
+    mesh.parent = carRoot;
 
-    console.log("Auto GLB cargado correctamente:", fileName);
+    mesh.setEnabled(true);
+    mesh.isVisible = true;
+
+    // Optimización
+    mesh.alwaysSelectAsActiveMesh = false;
+    mesh.doNotSyncBoundingInfo = false;
+    mesh.isPickable = false;
+
+    // Muy importante
+    mesh.receiveShadows = false;
+    mesh.freezeNormals();
+
+  }
+}
+
+    carRoot.position = new BABYLON.Vector3(0, 0.05, 0);
+    carRoot.scaling = new BABYLON.Vector3(0.9, 0.9, 0.9);
+    console.log("Meshes del auto:", result.meshes.length);
+    carRoot.rotation.y = 0;
+
+    console.log("Auto GLB cargado correctamente");
   } catch (error) {
-    console.error("No se pudo cargar el auto GLB:", error);
+    console.error("ERROR REAL cargando GLB:", error);
 
-    // Auto rojo de emergencia para saber que el collider existe
     const fallback = BABYLON.MeshBuilder.CreateBox(
       "fallbackCar",
       { width: 2.8, height: 1, depth: 4.4 },
@@ -2173,8 +2203,11 @@ createWebAuraAtLonLat(
 );
   createAvatar(new BABYLON.Vector3(0, 1, 20));
 
-await loadCarModel(
-  "miniCooper.glb",
+// await loadCarModel(
+//   "miniCooper.glb",
+//   new BABYLON.Vector3(4, 0.18, 20)
+// );
+createMiniCooper(
   new BABYLON.Vector3(4, 0.18, 20)
 );
 
