@@ -1,3 +1,26 @@
+const ACCESS_PASSWORD = "niudwdemo";
+
+const enteredPassword = prompt("Ingrese contraseña:");
+
+if (enteredPassword !== ACCESS_PASSWORD) {
+  document.body.innerHTML = `
+    <div style="
+      width:100vw;
+      height:100vh;
+      background:black;
+      color:white;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-family:Arial;
+      font-size:28px;
+    ">
+      Acceso denegado
+    </div>
+  `;
+
+  throw new Error("Acceso denegado");
+}
 import * as BABYLON from "babylonjs";
 
 // Canvas
