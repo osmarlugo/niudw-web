@@ -1066,7 +1066,7 @@ function createNiuStoreAtLonLat(
     true
   );
 
-  const ctx = texture.getContext();
+  const ctx = texture.getContext() as CanvasRenderingContext2D;
   ctx.fillStyle = "white";
   ctx.fillRect(0, 0, 512, 128);
   ctx.fillStyle = "black";
@@ -1118,7 +1118,7 @@ function createBuildingBetweenCoords(
       true
     );
 
-    const ctx = texture.getContext();
+    const ctx = texture.getContext() as CanvasRenderingContext2D;
 
     ctx.fillStyle = "#0636A8";
     ctx.fillRect(0, 0, 1024, 256);
@@ -1441,7 +1441,7 @@ function createStopSignAtLonLat(lon: number, lat: number) {
     true
   );
 
-  const ctx = stopTexture.getContext();
+  const ctx = stopTexture.getContext() as CanvasRenderingContext2D;
 
   ctx.clearRect(0, 0, 512, 512);
 
@@ -1614,7 +1614,7 @@ function createStreetSignBetweenCoords(
     true
   );
 
-  const ctx = signTexture.getContext();
+  const ctx = signTexture.getContext() as CanvasRenderingContext2D;
 
   ctx.fillStyle = "#0B8A3C";
   ctx.fillRect(0, 0, 1024, 256);
@@ -1840,7 +1840,7 @@ function createCentrixBillboardAtLonLat(lon: number, lat: number) {
     true
   );
 
-  const ctx = texture.getContext();
+  const ctx = texture.getContext() as CanvasRenderingContext2D;
 
   ctx.fillStyle = "white";
   ctx.fillRect(0, 0, 1536, 512);
@@ -2129,7 +2129,7 @@ function createSalesBoothAtLonLat(lon: number, lat: number) {
     true
   );
 
-  const ctx = signTexture.getContext();
+  const ctx = signTexture.getContext() as CanvasRenderingContext2D;
   ctx.fillStyle = "#0B2FA5";
   ctx.fillRect(0, 0, 512, 128);
   ctx.fillStyle = "white";
