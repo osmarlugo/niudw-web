@@ -22505,7 +22505,7 @@ const inputStyle = `
 `;
 // Pantalla de ciudades desactivada por ahora
 // showCitySelector();
-setupInitialGame("lima");
+showAuthScreen("register"); // pantalla inicial: Únete a Niu
 
 updateDayNightCycle();
 setInterval(() => {
