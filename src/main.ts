@@ -21724,9 +21724,9 @@ function createOesteCustomObjects() {
 // =========================
 
 let worldChatUsername =
+  localStorage.getItem("niuwd_session_user") ||
   localStorage.getItem("niuwd_username") ||
-  prompt("Nombre de usuario para el chat:") ||
-  "Invitado" + Math.floor(Math.random() * 999);
+  "Invitado";
 
 localStorage.setItem("niuwd_username", worldChatUsername);
 
