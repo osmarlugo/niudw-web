@@ -22424,11 +22424,25 @@ background: linear-gradient(180deg, #3db7ff, #4d6dff);
         return;
       }
 
-      users.push({ username, email, password, createdAt: Date.now() });
+            users.push({ username, email, password, createdAt: Date.now() });
       saveStoredUsers(users);
       setSessionUser(username);
       localStorage.setItem("niuwd_fuel_liters", "700");
       localStorage.setItem("niuwd_digital_coins", "0");
+
+      // Cuenta nueva: sin amigos ni chats (ANTES del return)
+      localStorage.setItem("niuwd_friends", "[]");
+      localStorage.setItem("niuwd_friend_requests", "[]");
+      localStorage.setItem("niuwd_world_chat", "[]");
+      Object.keys(localStorage)
+        .filter((k) => k.startsWith("niuwd_chat_"))
+        .forEach((k) => localStorage.removeItem(k));
+
+      // Si ya existen en memoria, vaciarlas también
+      try {
+        friends = [];
+        friendRequests = [];
+      } catch (_) {}
 
       screen.remove();
       if (typeof worldChatUsername !== "undefined") worldChatUsername = username;
@@ -24578,31 +24592,18 @@ let friends = JSON.parse(
   localStorage.getItem("niuwd_friends") || "[]"
 );
 
-if (friends.length === 0) {
-  friends = [
-    {
-      id: 1,
-      name: "Juan NIU",
-      online: true,
-      x: 120,
-      z: -80
-    },
-    {
-      id: 2,
-      name: "Carlos NIU",
-      online: false,
-      x: -60,
-      z: 90
-    },
-    {
-      id: 3,
-      name: "Maria NIU",
-      online: true,
-      x: 40,
-      z: -140
-    }
-  ];
-}
+// Eliminar amigos demo antiguos si aún están guardados
+const DEMO_FRIEND_NAMES = ["Juan NIU", "Carlos NIU", "Maria NIU"];
+friends = friends.filter(
+  (f: { name?: string }) => !DEMO_FRIEND_NAMES.includes(f.name || "")
+);
+localStorage.setItem("niuwd_friends", JSON.stringify(friends));
+DEMO_FRIEND_NAMES.forEach((name) => {
+  localStorage.removeItem(
+    "niuwd_chat_" + name.replaceAll(" ", "_").toLowerCase()
+  );
+});
+
 function saveFriends() {
   localStorage.setItem(
     "niuwd_friends",
@@ -25103,8 +25104,8 @@ function openChat(friendName: string) {
 
   let messagesHtml = "";
 
-  if (messages.length === 0) {
-    messagesHtml = `<p><strong>${friendName}:</strong> Hola, estoy conectado en NIUWD.</p>`;
+    if (messages.length === 0) {
+    messagesHtml = `<p style="opacity:0.7">Sin mensajes todavía. Escribe el primero.</p>`;
   } else {
     for (const msg of messages) {
       messagesHtml += msg;
