@@ -4,6 +4,16 @@ import earcut from "earcut";
 
 import { createRealEstateProject } from "./realEstate";
 
+import { supabase } from "./supabaseClient";
+
+supabase.auth.getSession().then(({ data, error }) => {
+  if (error) {
+    console.error("Supabase error:", error.message);
+  } else {
+    console.log("Supabase OK. Sesión:", data.session ? "activa" : "ninguna");
+  }
+});
+
 // Canvas
 const canvas = document.createElement("canvas");
 canvas.id = "renderCanvas";
@@ -22394,7 +22404,7 @@ background: linear-gradient(180deg, #3db7ff, #4d6dff);
     showAuthScreen(isRegister ? "login" : "register");
   };
 
-  document.getElementById("authPrimaryBtn")!.onclick = async () => {
+    document.getElementById("authPrimaryBtn")!.onclick = async () => {
     const username = usernameInput.value.trim();
     const password = passwordInput.value;
     const email = emailInput?.value.trim() || "";
@@ -22408,9 +22418,8 @@ background: linear-gradient(180deg, #3db7ff, #4d6dff);
       return;
     }
 
-    const users = getStoredUsers();
-
     if (isRegister) {
+      // ===== REGISTRO CON SUPABASE =====
       if (!email || !email.includes("@")) {
         showError("Ingresa un correo electrónico válido.");
         return;
@@ -22419,52 +22428,143 @@ background: linear-gradient(180deg, #3db7ff, #4d6dff);
         showError("Debes aceptar los Términos y la Política de privacidad.");
         return;
       }
-      if (users.some((u) => u.username.toLowerCase() === username.toLowerCase())) {
-        showError("Ese nombre de usuario ya está registrado.");
+
+      showError(""); // limpia error
+      const primaryBtn = document.getElementById("authPrimaryBtn") as HTMLButtonElement;
+      if (primaryBtn) primaryBtn.disabled = true;
+
+      try {
+        // 1) Crear usuario en Auth (email + password)
+        const { data, error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: { username },
+          },
+        });
+
+        if (error) {
+          showError(error.message);
+          if (primaryBtn) primaryBtn.disabled = false;
+          return;
+        }
+
+        if (!data.user) {
+          showError("No se pudo crear la cuenta. Intenta de nuevo.");
+          if (primaryBtn) primaryBtn.disabled = false;
+          return;
+        }
+
+        // 2) Crear perfil en la tabla profiles
+        const { error: profileError } = await supabase.from("profiles").insert({
+          id: data.user.id,
+          username: username,
+          fuel_liters: 700,
+          digital_coins: 0,
+          unlocked_cities: ["miraflores"],
+          last_city: "miraflores",
+        });
+
+        if (profileError) {
+          console.error("Error perfil:", profileError);
+          // Si el perfil falla, igual intentamos entrar
+        }
+
+        // 3) Limpiar datos locales viejos de demos
+        localStorage.setItem("niuwd_friends", "[]");
+        localStorage.setItem("niuwd_friend_requests", "[]");
+        localStorage.setItem("niuwd_world_chat", "[]");
+        Object.keys(localStorage)
+          .filter((k) => k.startsWith("niuwd_chat_"))
+          .forEach((k) => localStorage.removeItem(k));
+
+        localStorage.setItem("niuwd_session_user", username);
+        localStorage.setItem("niuwd_username", username);
+        localStorage.setItem("niuwd_fuel_liters", "700");
+        localStorage.setItem("niuwd_digital_coins", "0");
+
+        if (typeof worldChatUsername !== "undefined") {
+          worldChatUsername = username;
+        }
+
+        screen.remove();
+        await setupInitialGame("lima");
+      } catch (err: any) {
+        showError(err?.message || "Error al registrar.");
+        if (primaryBtn) primaryBtn.disabled = false;
+      }
+
+      return;
+    }
+
+    // ===== LOGIN CON SUPABASE =====
+    // En login usamos el campo usuario como EMAIL
+    // (si en tu formulario de login no hay email, el usuario debe escribir el correo)
+    const loginEmail = email || username;
+
+    if (!loginEmail.includes("@")) {
+      showError("Para iniciar sesión escribe tu correo electrónico.");
+      return;
+    }
+
+    const primaryBtn = document.getElementById("authPrimaryBtn") as HTMLButtonElement;
+    if (primaryBtn) primaryBtn.disabled = true;
+
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: loginEmail,
+        password,
+      });
+
+      if (error) {
+        showError(error.message);
+        if (primaryBtn) primaryBtn.disabled = false;
         return;
       }
 
-            users.push({ username, email, password, createdAt: Date.now() });
-      saveStoredUsers(users);
-      setSessionUser(username);
-      localStorage.setItem("niuwd_fuel_liters", "700");
-      localStorage.setItem("niuwd_digital_coins", "0");
+      if (!data.user) {
+        showError("No se pudo iniciar sesión.");
+        if (primaryBtn) primaryBtn.disabled = false;
+        return;
+      }
 
-      // Cuenta nueva: sin amigos ni chats (ANTES del return)
-      localStorage.setItem("niuwd_friends", "[]");
-      localStorage.setItem("niuwd_friend_requests", "[]");
-      localStorage.setItem("niuwd_world_chat", "[]");
-      Object.keys(localStorage)
-        .filter((k) => k.startsWith("niuwd_chat_"))
-        .forEach((k) => localStorage.removeItem(k));
+      // Cargar perfil
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("id", data.user.id)
+        .maybeSingle();
 
-      // Si ya existen en memoria, vaciarlas también
-      try {
-        friends = [];
-        friendRequests = [];
-      } catch (_) {}
+      const uname =
+        profile?.username ||
+        (data.user.user_metadata?.username as string) ||
+        loginEmail.split("@")[0];
+
+      if (profile) {
+        localStorage.setItem("niuwd_fuel_liters", String(profile.fuel_liters ?? 700));
+        localStorage.setItem("niuwd_digital_coins", String(profile.digital_coins ?? 0));
+        if (Array.isArray(profile.unlocked_cities)) {
+          // si tienes unlockedCities en memoria, se actualizará al cargar el juego
+          localStorage.setItem(
+            "niuwd_unlocked_cities",
+            JSON.stringify(profile.unlocked_cities)
+          );
+        }
+      }
+
+      localStorage.setItem("niuwd_session_user", uname);
+      localStorage.setItem("niuwd_username", uname);
+
+      if (typeof worldChatUsername !== "undefined") {
+        worldChatUsername = uname;
+      }
 
       screen.remove();
-      if (typeof worldChatUsername !== "undefined") worldChatUsername = username;
       await setupInitialGame("lima");
-      return;
+    } catch (err: any) {
+      showError(err?.message || "Error al iniciar sesión.");
+      if (primaryBtn) primaryBtn.disabled = false;
     }
-
-    const found = users.find(
-      (u) =>
-        u.username.toLowerCase() === username.toLowerCase() &&
-        u.password === password
-    );
-
-    if (!found) {
-      showError("Usuario o contraseña incorrectos.");
-      return;
-    }
-
-    setSessionUser(found.username);
-    screen.remove();
-    if (typeof worldChatUsername !== "undefined") worldChatUsername = found.username;
-    await setupInitialGame("lima");
   };
 }
 
