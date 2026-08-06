@@ -3019,12 +3019,92 @@ let digitalCoins = Number(
 function coinsToNiu(coins: number) {
   return coins / 1000;
 }
+// =========================
+// SINCRONIZAR PERFIL CON SUPABASE
+// =========================
 
+async function syncProfileToCloud() {
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    const { error } = await supabase
+      .from("profiles")
+      .update({
+        fuel_liters: fuelLiters,
+        digital_coins: digitalCoins,
+        unlocked_cities: unlockedCities.slice(),
+        last_city: currentMapName || "miraflores",
+      })
+      .eq("id", user.id);
+
+    if (error) {
+      console.warn("No se pudo guardar perfil en la nube:", error.message);
+    }
+  } catch (e) {
+    console.warn("Error syncProfileToCloud", e);
+  }
+}
+
+async function loadProfileFromCloud(): Promise<boolean> {
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return false;
+
+    const { data: profile, error } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (error || !profile) {
+      console.warn("No se pudo cargar perfil:", error?.message);
+      return false;
+    }
+
+    if (typeof profile.fuel_liters === "number") {
+      fuelLiters = profile.fuel_liters;
+      localStorage.setItem("niuwd_fuel_liters", String(fuelLiters));
+    }
+
+    if (typeof profile.digital_coins === "number") {
+      digitalCoins = profile.digital_coins;
+      localStorage.setItem("niuwd_digital_coins", String(digitalCoins));
+    }
+
+    if (Array.isArray(profile.unlocked_cities) && profile.unlocked_cities.length) {
+      unlockedCities = profile.unlocked_cities.slice();
+      localStorage.setItem(
+        "niuwd_unlocked_cities",
+        JSON.stringify(unlockedCities)
+      );
+    }
+
+    if (profile.username) {
+      localStorage.setItem("niuwd_session_user", profile.username);
+      localStorage.setItem("niuwd_username", profile.username);
+      if (typeof worldChatUsername !== "undefined") {
+        worldChatUsername = profile.username;
+      }
+    }
+
+    if (typeof updateWalletButton === "function") {
+      updateWalletButton();
+    }
+
+    return true;
+  } catch (e) {
+    console.warn("Error loadProfileFromCloud", e);
+    return false;
+  }
+}
 function saveWallet() {
   localStorage.setItem(
     "niuwd_digital_coins",
     digitalCoins.toString()
   );
+  // Nube (no bloquea el juego)
+  void syncProfileToCloud();
 }
 
 function addDigitalCoins(amount: number) {
@@ -20336,6 +20416,10 @@ function updateFuelWarningSystem() {
   }
 }
 async function setupInitialGame(city: "lima" | "maturin") {
+  // Cargar progreso desde Supabase (gasolina, monedas, ciudades)
+  await loadProfileFromCloud();
+  await loadFriendsFromCloud();
+
   if (city === "lima") {
   currentMapName = "miraflores";
   currentZone = "kennedy";
@@ -24703,7 +24787,157 @@ DEMO_FRIEND_NAMES.forEach((name) => {
     "niuwd_chat_" + name.replaceAll(" ", "_").toLowerCase()
   );
 });
+// =========================
+// AMIGOS EN LA NUBE (Supabase)
+// =========================
 
+async function loadFriendsFromCloud() {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    friends = [];
+    friendRequests = [];
+    return;
+  }
+
+  const { data: rows, error } = await supabase
+    .from("friendships")
+    .select("id, requester_id, addressee_id, status")
+    .or(`requester_id.eq.${user.id},addressee_id.eq.${user.id}`);
+
+  if (error) {
+    console.warn("Error cargando amistades:", error.message);
+    return;
+  }
+
+  const accepted = (rows || []).filter((r) => r.status === "accepted");
+  const pendingToMe = (rows || []).filter(
+    (r) => r.status === "pending" && r.addressee_id === user.id
+  );
+
+  // IDs de los otros usuarios
+  const friendIds = accepted.map((r) =>
+    r.requester_id === user.id ? r.addressee_id : r.requester_id
+  );
+  const requestIds = pendingToMe.map((r) => r.requester_id);
+
+  const allIds = [...new Set([...friendIds, ...requestIds])];
+
+  let profilesMap: Record<string, string> = {};
+  if (allIds.length > 0) {
+    const { data: profiles } = await supabase
+      .from("profiles")
+      .select("id, username")
+      .in("id", allIds);
+
+    for (const p of profiles || []) {
+      profilesMap[p.id] = p.username;
+    }
+  }
+
+  friends = accepted.map((r, index) => {
+    const otherId =
+      r.requester_id === user.id ? r.addressee_id : r.requester_id;
+    return {
+      id: index + 1,
+      cloudId: otherId,
+      friendshipId: r.id,
+      name: profilesMap[otherId] || "Usuario",
+      online: false,
+      x: 0,
+      z: 0,
+    };
+  });
+
+  friendRequests = pendingToMe.map((r, index) => {
+    const otherId = r.requester_id;
+    return {
+      id: index + 1,
+      cloudId: otherId,
+      friendshipId: r.id,
+      name: profilesMap[otherId] || "Usuario",
+      online: false,
+      x: 0,
+      z: 0,
+    };
+  });
+
+  localStorage.setItem("niuwd_friends", JSON.stringify(friends));
+  localStorage.setItem("niuwd_friend_requests", JSON.stringify(friendRequests));
+}
+
+async function sendFriendRequestByUsername(targetUsername: string) {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    alert("Debes iniciar sesión.");
+    return;
+  }
+
+  const name = targetUsername.trim();
+  if (!name) {
+    alert("Escribe un nombre de usuario.");
+    return;
+  }
+
+  // Buscar perfil del otro
+  const { data: target, error: findErr } = await supabase
+    .from("profiles")
+    .select("id, username")
+    .eq("username", name)
+    .maybeSingle();
+
+  if (findErr || !target) {
+    alert("No se encontró ese usuario.");
+    return;
+  }
+
+  if (target.id === user.id) {
+    alert("No puedes agregarte a ti mismo.");
+    return;
+  }
+
+  const { error } = await supabase.from("friendships").insert({
+    requester_id: user.id,
+    addressee_id: target.id,
+    status: "pending",
+  });
+
+  if (error) {
+    if (error.message.includes("duplicate") || error.code === "23505") {
+      alert("Ya existe una solicitud o amistad con ese usuario.");
+    } else {
+      alert("Error: " + error.message);
+    }
+    return;
+  }
+
+  alert(`Solicitud enviada a ${target.username}`);
+}
+
+async function acceptFriendRequestCloud(friendshipId: string) {
+  const { error } = await supabase
+    .from("friendships")
+    .update({ status: "accepted" })
+    .eq("id", friendshipId);
+
+  if (error) {
+    alert("No se pudo aceptar: " + error.message);
+    return;
+  }
+  await loadFriendsFromCloud();
+}
+
+async function rejectFriendRequestCloud(friendshipId: string) {
+  const { error } = await supabase
+    .from("friendships")
+    .update({ status: "rejected" })
+    .eq("id", friendshipId);
+
+  if (error) {
+    alert("No se pudo rechazar: " + error.message);
+    return;
+  }
+  await loadFriendsFromCloud();
+}
 function saveFriends() {
   localStorage.setItem(
     "niuwd_friends",
@@ -24886,7 +25120,9 @@ function savePlayerProfile() {
   localStorage.setItem(PLAYER_PROFILE_KEY, JSON.stringify(profile));
 
   // Compatibilidad con lo que ya tienes
-  localStorage.setItem("niuwd_digital_coins", digitalCoins.toString());
+    localStorage.setItem("niuwd_digital_coins", digitalCoins.toString());
+  localStorage.setItem("niuwd_fuel_liters", String(fuelLiters));
+  void syncProfileToCloud();
 }
 function openSocialWindow(title: string, content: string) {
   socialWindow.style.display = "block";
@@ -25010,49 +25246,10 @@ socialWindow.addEventListener("click", (e) => {
 
         if (!sendBtn || !input) return;
 
-        sendBtn.onclick = () => {
+                sendBtn.onclick = async () => {
           const username = input.value.trim();
           if (!username) return;
-
-          const alreadyFriend = friends.some(
-            (friend: { id: string | number; name?: string }) =>
-              (friend.name ?? "").toLowerCase() === username.toLowerCase()
-          );
-
-          const alreadyRequested = friendRequests.some(
-            (request) =>
-              request.name.toLowerCase() === username.toLowerCase()
-          );
-
-          if (alreadyFriend) {
-            openSocialWindow(
-              "Agregar amigo",
-              `<p>${username} ya está en tu lista de amigos.</p>`
-            );
-            return;
-          }
-
-          if (alreadyRequested) {
-            openSocialWindow(
-              "Agregar amigo",
-              `<p>Ya enviaste una solicitud a ${username}.</p>`
-            );
-            return;
-          }
-
-          friendRequests.push({
-            id: Date.now(),
-            name: username,
-            online: true,
-            x: Math.random() * 300 - 150,
-            z: Math.random() * 300 - 150,
-          });
-          saveFriendRequests();
-
-          openSocialWindow(
-            "Solicitud enviada",
-            `<p>Solicitud enviada a ${username}</p>`
-          );
+          await sendFriendRequestByUsername(username);
         };
       }, 50);
     };
@@ -25857,6 +26054,15 @@ transmissionBtn.onclick = () => {
       ? "Caja: Automática"
       : "Caja: Manual";
 };
+// Guardar progreso en la nube cada 30 segundos
+setInterval(() => {
+  void syncProfileToCloud();
+}, 30000);
+
+// Al cerrar o recargar la pestaña
+window.addEventListener("beforeunload", () => {
+  void syncProfileToCloud();
+});
 // Render
 engine.runRenderLoop(() => {
   scene.render();
