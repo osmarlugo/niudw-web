@@ -25776,11 +25776,25 @@ controlsBtn.onclick = () => {
   );
 };
 profileBtn.onclick = () => {
+  const username =
+    localStorage.getItem("niuwd_session_user") ||
+    localStorage.getItem("niuwd_username") ||
+    "Invitado";
+
+  const cityLabel =
+    currentMapName === "manhattan"
+      ? "Manhattan"
+      : currentMapName === "beverly-hills"
+        ? "Beverly Hills"
+        : currentMapName === "miraflores"
+          ? "Miraflores"
+          : currentMapName;
+
   openSocialWindow(
     "Perfil",
     `
-      <p>Usuario: Invitado NIU</p>
-      <p>Ciudad: ${currentMapName === "maturin" ? "Maturín Demo" : "Miraflores Demo"}</p>
+      <p>Usuario: <strong>${username}</strong></p>
+      <p>Ciudad: ${cityLabel}</p>
       <p>Estado: En línea</p>
     `
   );
