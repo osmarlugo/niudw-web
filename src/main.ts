@@ -24822,26 +24822,33 @@ async function loadFriendsFromCloud() {
 
   const allIds = [...new Set([...friendIds, ...requestIds])];
 
-  let profilesMap: Record<string, string> = {};
+    let profilesMap: Record<string, string> = {};
   if (allIds.length > 0) {
-    const { data: profiles } = await supabase
+    const { data: profiles, error: profErr } = await supabase
       .from("profiles")
       .select("id, username")
       .in("id", allIds);
 
+    if (profErr) {
+      console.warn("Error perfiles amigos:", profErr.message);
+    }
+
     for (const p of profiles || []) {
-      profilesMap[p.id] = p.username;
+      if (p.id && p.username) {
+        profilesMap[String(p.id)] = p.username;
+      }
     }
   }
 
   friends = accepted.map((r, index) => {
     const otherId =
       r.requester_id === user.id ? r.addressee_id : r.requester_id;
+    const key = String(otherId);
     return {
       id: index + 1,
-      cloudId: otherId,
+      cloudId: key,
       friendshipId: r.id,
-      name: profilesMap[otherId] || "Usuario",
+      name: profilesMap[key] || "Usuario",
       online: false,
       x: 0,
       z: 0,
@@ -24850,11 +24857,12 @@ async function loadFriendsFromCloud() {
 
   friendRequests = pendingToMe.map((r, index) => {
     const otherId = r.requester_id;
+    const key = String(otherId);
     return {
       id: index + 1,
-      cloudId: otherId,
+      cloudId: key,
       friendshipId: r.id,
-      name: profilesMap[otherId] || "Usuario",
+      name: profilesMap[key] || "Usuario",
       online: false,
       x: 0,
       z: 0,
@@ -24864,7 +24872,41 @@ async function loadFriendsFromCloud() {
   localStorage.setItem("niuwd_friends", JSON.stringify(friends));
   localStorage.setItem("niuwd_friend_requests", JSON.stringify(friendRequests));
 }
+let friendshipsChannel: ReturnType<typeof supabase.channel> | null = null;
 
+function subscribeFriendshipsRealtime() {
+  // Evitar suscripciones duplicadas
+  if (friendshipsChannel) {
+    supabase.removeChannel(friendshipsChannel);
+    friendshipsChannel = null;
+  }
+
+  friendshipsChannel = supabase
+    .channel("friendships-live")
+    .on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "friendships",
+      },
+      async (payload) => {
+        console.log("Cambio en friendships:", payload.eventType);
+        await loadFriendsFromCloud();
+
+        // Si tienes la ventana de solicitudes abierta, no se redibuja sola;
+        // el usuario puede volver a abrir Solicitudes o Amigos y ya verá datos nuevos.
+        // Opcional: aviso simple
+        if (payload.eventType === "INSERT") {
+          // Nueva solicitud o relación
+          console.log("Nueva fila de amistad en tiempo real");
+        }
+      }
+    )
+    .subscribe((status) => {
+      console.log("Realtime friendships:", status);
+    });
+}
 async function sendFriendRequestByUsername(targetUsername: string) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) {
@@ -24882,7 +24924,7 @@ async function sendFriendRequestByUsername(targetUsername: string) {
   const { data: target, error: findErr } = await supabase
     .from("profiles")
     .select("id, username")
-    .eq("username", name)
+    .ilike("username", name)
     .maybeSingle();
 
   if (findErr || !target) {
@@ -25465,7 +25507,9 @@ function openChat(friendName: string) {
     box.scrollTop = box.scrollHeight;
   };
 }
-requestsBtn.onclick = () => {
+requestsBtn.onclick = async () => {
+  await loadFriendsFromCloud();
+
   let html = "";
 
   if (friendRequests.length === 0) {
@@ -25492,59 +25536,37 @@ requestsBtn.onclick = () => {
   openSocialWindow("Solicitudes", html);
 
   for (const request of friendRequests) {
-    const btn = document.getElementById(`accept_${request.id}`) as HTMLButtonElement;
+    const btn = document.getElementById(
+      `accept_${request.id}`
+    ) as HTMLButtonElement | null;
 
-    if (!btn) continue;
-
-    btn.onclick = () => {
-      friends.push({
-        id: request.id,
-        name: request.name,
-        online: request.online,
-        x: request.x,
-        z: request.z
-      });
-      saveFriends();
-
-      createFriendAvatar(request);
-
-      const index = friendRequests.findIndex(r => r.id === request.id);
-
-      if (index >= 0) {
-        friendRequests.splice(index, 1);
-      }
-      saveFriendRequests();
-
-      openSocialWindow(
-        "Amistad aceptada",
-        `<p>${request.name} ahora es tu amigo.</p>`
-      );
-    };
-    const rejectBtn =
-  document.getElementById(
-    `reject_${request.id}`
-  ) as HTMLButtonElement;
-
-if (rejectBtn) {
-
-  rejectBtn.onclick = () => {
-
-    const index =
-      friendRequests.findIndex(
-        r => r.id === request.id
-      );
-
-    if (index >= 0) {
-      friendRequests.splice(index, 1);
+    if (btn) {
+      btn.onclick = async () => {
+        if ((request as any).friendshipId) {
+          await acceptFriendRequestCloud((request as any).friendshipId);
+        }
+        openSocialWindow(
+          "Amistad aceptada",
+          `<p>${request.name} ahora es tu amigo.</p>`
+        );
+      };
     }
-    saveFriendRequests();
 
-    openSocialWindow(
-      "Solicitud rechazada",
-      `<p>Rechazaste la solicitud de ${request.name}</p>`
-    );
-  };
-}
+    const rejectBtn = document.getElementById(
+      `reject_${request.id}`
+    ) as HTMLButtonElement | null;
+
+    if (rejectBtn) {
+      rejectBtn.onclick = async () => {
+        if ((request as any).friendshipId) {
+          await rejectFriendRequestCloud((request as any).friendshipId);
+        }
+        openSocialWindow(
+          "Solicitud rechazada",
+          `<p>Rechazaste la solicitud de ${request.name}</p>`
+        );
+      };
+    }
   }
 };
 
