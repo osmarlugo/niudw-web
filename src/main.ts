@@ -2111,8 +2111,14 @@ async function markMyselfReadyAtStart() {
       4000
     );
 
-    // Solo iniciar si YA están todos
-    if (ready.length >= needed) {
+        // Solo si hay 2 o más IDs distintos en ready
+    const uniqueReady = [...new Set(ready.map(String))];
+    showMissionMessage(
+      `En el punto rosa: ${uniqueReady.length} / ${needed}. Esperando a todos...`,
+      4000
+    );
+
+    if (uniqueReady.length >= needed && uniqueReady.length >= 2) {
       startRaceCountdown();
     }
     // Si no, no hacer nada: el realtime avisará cuando el otro llegue
@@ -2126,6 +2132,7 @@ async function startMultiplayerRace(
   await loadGpsGraph();
 
   cancelCurrentMission();
+  mpLocalReadySent = false;
 
   multiplayerRaceActive = true;
   multiplayerIsHost = asHost;
@@ -25454,7 +25461,7 @@ function subscribeRaceInvitesRealtime() {
         } = await supabase.auth.getUser();
         if (!user) return;
 
-        // --- Aceptó / rechazó (host) ---
+        // --- Aceptó (host ve el lobby) ---
         if (row.status === "accepted" && row.from_id === user.id) {
           for (const pl of multiplayerLobbyPlayers) {
             if (!pl.isLocal && !pl.accepted) {
@@ -25463,19 +25470,72 @@ function subscribeRaceInvitesRealtime() {
             }
           }
           showMissionMessage("Un amigo aceptó la partida.", 3000);
-          if (multiplayerSelectedCircuit) renderMultiplayerLobbyWindow();
+          if (multiplayerSelectedCircuit && multiplayerIsHost) {
+            renderMultiplayerLobbyWindow();
+          }
         }
 
+        // --- Rechazó ---
         if (row.status === "rejected" && row.from_id === user.id) {
           multiplayerLobbyPlayers = multiplayerLobbyPlayers.filter(
             (p) => p.isLocal || p.accepted
           );
           showMissionMessage("Tu amigo ha cancelado la solicitud", 4000);
-          if (multiplayerSelectedCircuit) renderMultiplayerLobbyWindow();
+          if (multiplayerSelectedCircuit && multiplayerIsHost) {
+            renderMultiplayerLobbyWindow();
+          }
         }
 
-        // --- Host inició la partida (invitado) ---
-                if (
+        // --- Host inició: INVITADO crea el aro rosa ---
+        if (
+          row.status === "started" &&
+          row.to_id === user.id &&
+          !multiplayerRaceActive
+        ) {
+          const config =
+            Object.values(raceConfigs).find(
+              (c: any) =>
+                c.id === row.circuit_id || c.name === row.circuit_name
+            ) || null;
+
+          if (!config) {
+            console.warn("Circuito no encontrado:", row.circuit_id, row.circuit_name);
+            return;
+          }
+
+          multiplayerSelectedCircuit = config;
+          multiplayerIsHost = false;
+          multiplayerMaxPlayers = row.max_players || 2;
+          multiplayerLobbyPlayers = [
+            {
+              id: "host",
+              name: row.from_name,
+              isHost: true,
+              accepted: true,
+              isLocal: false,
+            },
+            {
+              id: "local",
+              name: "Tú",
+              isHost: false,
+              accepted: true,
+              isLocal: true,
+            },
+          ];
+
+          if (typeof socialWindow !== "undefined" && socialWindow) {
+            socialWindow.style.display = "none";
+          }
+
+          await startMultiplayerRace(config, multiplayerLobbyPlayers, false);
+          showMissionMessage(
+            "¡Partida iniciada! Ve al punto rosa. La carrera empieza cuando todos lo toquen.",
+            6000
+          );
+        }
+
+        // --- Alguien llegó al rosa (ready_ids) ---
+        if (
           row.status === "started" &&
           Array.isArray(row.ready_ids) &&
           multiplayerRaceActive &&
@@ -25483,47 +25543,28 @@ function subscribeRaceInvitesRealtime() {
           !countdownActive &&
           !raceStarted
         ) {
-          const needed = Math.max(
+          const needed = Math.max(2, multiplayerMaxPlayers > 0 ? Math.min(multiplayerMaxPlayers, multiplayerLobbyPlayers.filter((p) => p.accepted).length || 2) : 2);
+          // Más simple y seguro para 2 jugadores:
+          const need = Math.max(
             2,
             multiplayerLobbyPlayers.filter((p) => p.accepted).length
           );
-          const readyCount = row.ready_ids.length;
+          const readyCount = row.ready_ids.map(String).length;
 
           showMissionMessage(
-            `En el punto rosa: ${readyCount} / ${needed}. Esperando a todos...`,
-            2500
+            `En el punto rosa: ${readyCount} / ${need}. Esperando a todos...`,
+            3000
           );
 
-          // Solo cuando estén TODOS
-          if (readyCount >= needed) {
-            startRaceCountdown();
-          }
-        }
-
-        // --- Alguien marcó listo en el punto rosa ---
-        if (
-          row.status === "started" &&
-          Array.isArray(row.ready_ids) &&
-          multiplayerRaceActive &&
-          raceGoingToStart &&
-          !countdownActive
-        ) {
-          const needed = multiplayerLobbyPlayers.filter((p) => p.accepted)
-            .length;
-          const readyCount = row.ready_ids.length;
-
-          showMissionMessage(
-            `En el punto rosa: ${readyCount} / ${needed}`,
-            2500
-          );
-
-          if (readyCount >= needed && needed >= 2) {
+          if (readyCount >= need) {
             startRaceCountdown();
           }
         }
       }
     )
-    .subscribe();
+    .subscribe((status) => {
+      console.log("Realtime race_invites:", status);
+    });
 }
 const socialPanel = document.createElement("div");
 socialPanel.style.position = "fixed";
