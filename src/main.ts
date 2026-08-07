@@ -1262,6 +1262,10 @@ function cancelCurrentMission() {
   raceStarted = false;
   raceCountdownDone = false;
   countdownActive = false;
+  raceCountdownToken++; 
+  clearMpReadyRetry();
+  stopWaitingForRaceStart();
+  mpLocalReadySent = false;
 
   // Misión Mansiones Beverly Hills
 stopBeverlyMansionMission();
@@ -1894,16 +1898,24 @@ async function beginRaceAsGuest(row: any) {
   }
   if (multiplayerRaceActive) return;
 
-  const config =
+    // Resolver circuito por id exacto, luego por nombre
+  let config: RaceConfig | null =
+    (row.circuit_id && raceConfigs[row.circuit_id as keyof typeof raceConfigs]) ||
     Object.values(raceConfigs).find(
-      (c: any) => c.id === row.circuit_id || c.name === row.circuit_name
-    ) || null;
+      (c) => c.id === row.circuit_id || c.name === row.circuit_name
+    ) ||
+    null;
 
   if (!config) {
     console.warn("Circuito no encontrado:", row.circuit_id, row.circuit_name);
-    showMissionMessage("No se encontró el circuito de la partida.", 4000);
+    showMissionMessage(
+      "No se encontró el circuito: " + (row.circuit_name || row.circuit_id),
+      4000
+    );
     return;
   }
+
+  console.log("Invitado entra al circuito:", config.id, config.name);
 
   multiplayerSelectedCircuit = config;
   multiplayerIsHost = false;
@@ -1934,6 +1946,15 @@ async function beginRaceAsGuest(row: any) {
     "¡Partida iniciada! Ve al punto rosa. Empieza cuando todos lo toquen.",
     6000
   );
+}
+let raceCountdownToken = 0;
+let mpReadyRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearMpReadyRetry() {
+  if (mpReadyRetryTimer) {
+    clearTimeout(mpReadyRetryTimer);
+    mpReadyRetryTimer = null;
+  }
 }
 async function respondRaceInvite(inviteId: string, accept: boolean) {
   const {
@@ -2117,10 +2138,11 @@ async function tryStartMultiplayerRace() {
   } = await supabase.auth.getUser();
   if (!user) return;
 
-  mpLocalReadySent = false;
+    mpLocalReadySent = false;
   multiplayerRaceActive = false;
 
-  // Actualizar TODAS las invitaciones aceptadas de este host (sin filtrar solo por circuit_id)
+  const circuitId = multiplayerSelectedCircuit.id;
+
   const { data: updated, error } = await supabase
     .from("race_invites")
     .update({
@@ -2128,6 +2150,7 @@ async function tryStartMultiplayerRace() {
       ready_ids: [],
     })
     .eq("from_id", user.id)
+    .eq("circuit_id", circuitId) // ← solo este circuito
     .in("status", ["pending", "accepted"])
     .select("id, to_id, circuit_id, status");
 
@@ -2137,7 +2160,7 @@ async function tryStartMultiplayerRace() {
     return;
   }
 
-  console.log("Invitaciones puestas en started:", updated);
+  console.log("Invitaciones started:", updated, "circuito:", circuitId);
 
   socialWindow.style.display = "none";
 
@@ -2328,9 +2351,11 @@ async function startMultiplayerRace(
   );
 }
 async function cancelMultiplayerRaceSession() {
+  raceCountdownToken++;
+  clearMpReadyRetry();
   stopWaitingForRaceStart();
   mpLocalReadySent = false;
-
+  
   multiplayerRaceActive = false;
   multiplayerIsHost = false;
   multiplayerSelectedCircuit = null;
@@ -12584,7 +12609,10 @@ async function startRace(config: RaceConfig) {
 }
 async function startRaceCountdown() {
   if (countdownActive) return;
+  if (!raceMissionActive && !multiplayerRaceActive) return;
+  if (!raceGoingToStart) return;
 
+  const myToken = ++raceCountdownToken;
   countdownActive = true;
 
   gpsNavigationActive = false;
@@ -12602,31 +12630,51 @@ async function startRaceCountdown() {
 
   carVelocity = 0;
   raceCountdownDone = false;
-keys["w"] = false;
-keys["s"] = false;
-keys[" "] = false;
+  keys["w"] = false;
+  keys["s"] = false;
+  keys[" "] = false;
 
   raceText.style.display = "block";
   raceText.style.fontSize = "120px";
 
   raceText.innerText = "3";
   await new Promise((r) => setTimeout(r, 1000));
+  if (myToken !== raceCountdownToken) {
+    countdownActive = false;
+    raceText.style.display = "none";
+    return;
+  }
 
   raceText.innerText = "2";
   await new Promise((r) => setTimeout(r, 1000));
+  if (myToken !== raceCountdownToken) {
+    countdownActive = false;
+    raceText.style.display = "none";
+    return;
+  }
 
   raceText.innerText = "1";
   await new Promise((r) => setTimeout(r, 1000));
+  if (myToken !== raceCountdownToken) {
+    countdownActive = false;
+    raceText.style.display = "none";
+    return;
+  }
 
   raceText.innerText = "GO!";
   await new Promise((r) => setTimeout(r, 800));
+  if (myToken !== raceCountdownToken) {
+    countdownActive = false;
+    raceText.style.display = "none";
+    return;
+  }
 
   raceText.style.display = "none";
 
   countdownActive = false;
   raceGoingToStart = false;
   raceStarted = true;
-    raceCountdownDone = true;
+  raceCountdownDone = true;
 
   if (raceFinishLine) {
     raceFinishLine.setEnabled(true);
@@ -12636,9 +12684,9 @@ keys[" "] = false;
   raceTarget = "finish";
 
   setGpsDestination(
-  activeRaceConfig.finish.lon,
-  activeRaceConfig.finish.lat
-);
+    activeRaceConfig.finish.lon,
+    activeRaceConfig.finish.lat
+  );
 }
 function clearCurrentMap() {
 
@@ -20914,9 +20962,9 @@ if (city === "maturin") {
     createNiuTravelBoothBetweenCoords(
       -77.03495579750306,
       -12.123218777824798,
-      -77.03470,
-      -12.12340,
-      -1
+      -77.03495581248049,
+      -12.1232220826237,
+      1.5
     );
 
     createNiuMarketAtLonLat(
