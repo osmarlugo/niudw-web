@@ -16948,8 +16948,7 @@ function createFriendAvatar(friend: any) {
   }
 
   // Si no trae online, lo tratamos como conectado al aceptarlo
-  if (friend.online === false) return;
-
+  
   const friendMat = mat(
     `friendMat_${friend.id}`,
     new BABYLON.Color3(0.1, 0.85, 0.25)
@@ -16967,17 +16966,14 @@ function createFriendAvatar(friend: any) {
 
   // Posición (si no hay x/z, cerca del jugador)
   const baseX =
-    typeof friend.x === "number"
-      ? friend.x
-      : player
-        ? player.position.x + 6
-        : 6;
-  const baseZ =
-    typeof friend.z === "number"
-      ? friend.z
-      : player
-        ? player.position.z + 4
-        : 4;
+  typeof friend.x === "number" && (friend.x !== 0 || friend.z !== 0)
+    ? friend.x
+    : (typeof player !== "undefined" ? player.position.x + 4 : 0);
+
+const baseZ =
+  typeof friend.z === "number" && (friend.x !== 0 || friend.z !== 0)
+    ? friend.z
+    : (typeof player !== "undefined" ? player.position.z + 4 : 0);
 
   const root = new BABYLON.TransformNode(`friend_${friend.id}`, scene);
   root.position = new BABYLON.Vector3(baseX, 0, baseZ);
@@ -21842,6 +21838,59 @@ function saveWorldChatMessages(messages: WorldChatMessage[]) {
     JSON.stringify(messages.slice(-40))
   );
 }
+const WORLD_CHAT_LIMIT = 21;
+
+async function loadWorldChatFromCloud() {
+  const { data, error } = await supabase
+    .from("world_chat")
+    .select("user_name, body, created_at")
+    .order("created_at", { ascending: false })
+    .limit(WORLD_CHAT_LIMIT);
+
+  if (error) {
+    console.warn("world_chat load:", error.message);
+    return;
+  }
+
+  const messages = (data || [])
+    .slice()
+    .reverse()
+    .map((m) => ({
+      user: m.user_name,
+      text: m.body,
+      time: new Date(m.created_at).getTime(),
+    }));
+
+  localStorage.setItem("niuwd_world_chat", JSON.stringify(messages));
+  renderWorldChat();
+}
+
+async function trimWorldChat() {
+  const { data } = await supabase
+    .from("world_chat")
+    .select("id, created_at")
+    .order("created_at", { ascending: false });
+
+  if (!data || data.length <= WORLD_CHAT_LIMIT) return;
+
+  const toDelete = data.slice(WORLD_CHAT_LIMIT).map((r) => r.id);
+  if (toDelete.length) {
+    await supabase.from("world_chat").delete().in("id", toDelete);
+  }
+}
+
+function subscribeWorldChatRealtime() {
+  supabase
+    .channel("world-chat-live")
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "world_chat" },
+      () => {
+        void loadWorldChatFromCloud();
+      }
+    )
+    .subscribe();
+}
 // =========================
 // PANEL MISIÓN ENTREGA MEDICINA
 // Se muestra encima del chat mundial
@@ -24907,6 +24956,37 @@ function subscribeFriendshipsRealtime() {
       console.log("Realtime friendships:", status);
     });
 }
+async function loadPrivateChat(friendCloudId: string) {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user || !friendCloudId) return [];
+
+  const { data, error } = await supabase
+    .from("private_messages")
+    .select("from_id, body, created_at")
+    .or(
+      `and(from_id.eq.${user.id},to_id.eq.${friendCloudId}),and(from_id.eq.${friendCloudId},to_id.eq.${user.id})`
+    )
+    .order("created_at", { ascending: true })
+    .limit(100);
+
+  if (error) {
+    console.warn(error.message);
+    return [];
+  }
+
+  return data || [];
+}
+
+async function sendPrivateMessage(friendCloudId: string, text: string) {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user || !friendCloudId || !text.trim()) return;
+
+  await supabase.from("private_messages").insert({
+    from_id: user.id,
+    to_id: friendCloudId,
+    body: text.trim(),
+  });
+}
 async function sendFriendRequestByUsername(targetUsername: string) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) {
@@ -24965,8 +25045,15 @@ async function acceptFriendRequestCloud(friendshipId: string) {
     alert("No se pudo aceptar: " + error.message);
     return;
   }
+
   await loadFriendsFromCloud();
+
+  // Crear avatares de todos los amigos aceptados
+  for (const f of friends) {
+    createFriendAvatar(f);
+  }
 }
+
 
 async function rejectFriendRequestCloud(friendshipId: string) {
   const { error } = await supabase
@@ -24979,6 +25066,9 @@ async function rejectFriendRequestCloud(friendshipId: string) {
     return;
   }
   await loadFriendsFromCloud();
+}
+for (const f of friends) {
+  createFriendAvatar(f);
 }
 function saveFriends() {
   localStorage.setItem(
