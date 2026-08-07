@@ -2273,7 +2273,7 @@ async function startMultiplayerRace(
   players: MultiplayerLobbyPlayer[],
   asHost: boolean = true
 ) {
-    await loadGpsGraph();
+  await loadGpsGraph();
 
   // Limpia otras misiones SIN cancelar invitaciones multijugador
   raceMissionActive = false;
@@ -2282,16 +2282,18 @@ async function startMultiplayerRace(
   raceCountdownDone = false;
   countdownActive = false;
   clearRaceBots();
-  if (raceStartLine) {
+
+  if (raceStartLine !== null) {
     raceStartLine.dispose();
     raceStartLine = null;
   }
-  if (raceFinishLine) {
+  if (raceFinishLine !== null) {
     raceFinishLine.dispose();
     raceFinishLine = null;
   }
 
   mpLocalReadySent = false;
+
   multiplayerRaceActive = true;
   multiplayerIsHost = asHost;
   multiplayerSelectedCircuit = config;
@@ -2304,12 +2306,6 @@ async function startMultiplayerRace(
   raceCountdownDone = false;
   raceLap = 1;
   raceTarget = "finish";
-
-  // Importante: sin bots
-  clearRaceBots();
-
-  if (raceStartLine) raceStartLine.dispose();
-  if (raceFinishLine) raceFinishLine.dispose();
 
   raceStartLine = createRaceLine(
     config.start.lon,
