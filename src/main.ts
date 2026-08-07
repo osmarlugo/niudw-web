@@ -1570,6 +1570,21 @@ function openMultiplayerLobbySetup(config: RaceConfig) {
 
 function renderMultiplayerLobbyWindow() {
   if (!multiplayerSelectedCircuit) return;
+    // Invitado: no mostrar controles de host
+  if (!multiplayerIsHost) {
+    openSocialWindow(
+      "Esperando partida",
+      `
+        <p style="font-size:14px;">
+          Circuito: <strong style="color:#7CFF9A;">${multiplayerSelectedCircuit.name}</strong>
+        </p>
+        <p style="font-size:13px;color:#ccc;margin-top:10px;">
+          Esperando a que el anfitrión inicie la partida...
+        </p>
+      `
+    );
+    return;
+  }
 
   const acceptedCount = multiplayerLobbyPlayers.filter((p) => p.accepted).length;
 
@@ -1851,7 +1866,7 @@ async function respondRaceInvite(inviteId: string, accept: boolean) {
     return;
   }
 
-  multiplayerSelectedCircuit = config;
+    multiplayerSelectedCircuit = config;
   multiplayerIsHost = false;
   multiplayerMaxPlayers = inv.max_players || 2;
   multiplayerLobbyPlayers = [
@@ -1872,7 +1887,23 @@ async function respondRaceInvite(inviteId: string, accept: boolean) {
   ];
 
   showMissionMessage("Invitación aceptada. Esperando al anfitrión.", 4000);
-  renderMultiplayerLobbyWindow();
+
+  // Solo mensaje de espera — SIN botones de iniciar/invitar
+  openSocialWindow(
+    "Esperando partida",
+    `
+      <p style="font-size:14px;line-height:1.5;">
+        Aceptaste <strong style="color:#7CFF9A;">${config.name}</strong>.
+      </p>
+      <p style="font-size:13px;color:#ccc;">
+        Anfitrión: <strong>${inv.from_name}</strong>
+      </p>
+      <p style="font-size:13px;color:#aaa;margin-top:12px;">
+        Espera a que el anfitrión pulse <strong>Iniciar circuito</strong>.
+        Entonces se te enviará al punto rosa automáticamente.
+      </p>
+    `
+  );
 }
 
 function openMultiplayerInvitesPanel() {
@@ -1960,6 +1991,10 @@ function openMultiplayerInvitesPanel() {
   }, 50);
 }
 async function tryStartMultiplayerRace() {
+  if (!multiplayerIsHost) {
+    showMissionMessage("Solo el anfitrión puede iniciar la partida.", 3000);
+    return;
+  }
   if (!multiplayerSelectedCircuit) return;
 
   const accepted = multiplayerLobbyPlayers.filter((p) => p.accepted);
