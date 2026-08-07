@@ -2037,26 +2037,51 @@ async function tryStartMultiplayerRace() {
 let mpLocalReadySent = false;
 
 async function markMyselfReadyAtStart() {
-  if (mpLocalReadySent) return;
   if (!multiplayerRaceActive) return;
+  if (countdownActive || raceStarted) return;
 
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return;
 
+  // Cuántos jugadores hacen falta (mínimo 2)
+  const needed = Math.max(
+    2,
+    multiplayerLobbyPlayers.filter((p) => p.accepted).length
+  );
+
+  // Mensaje siempre (aunque ya te hayas marcado)
+  if (mpLocalReadySent) {
+    showMissionMessage(
+      `Esperando a los demás en el punto rosa... (${needed} jugadores)`,
+      2500
+    );
+    return;
+  }
+
   mpLocalReadySent = true;
 
-  // Traer invitaciones started donde participo
-  const { data: rows } = await supabase
+  const { data: rows, error } = await supabase
     .from("race_invites")
     .select("id, ready_ids, from_id, to_id, max_players")
     .eq("status", "started")
     .or(`from_id.eq.${user.id},to_id.eq.${user.id}`);
 
+  if (error) {
+    console.warn("ready_ids:", error.message);
+    showMissionMessage("Error al marcar listo. Revisa la conexión.", 3000);
+    mpLocalReadySent = false; // permitir reintentar
+    return;
+  }
+
+  // IMPORTANTE: si no hay filas, NO iniciar el conteo
   if (!rows || rows.length === 0) {
-    // Si no hay fila, al menos arranca en local (fallback)
-    startRaceCountdown();
+    showMissionMessage(
+      "Estás en el punto rosa. Esperando al otro jugador...",
+      4000
+    );
+    // No llamamos startRaceCountdown()
     return;
   }
 
@@ -2065,25 +2090,32 @@ async function markMyselfReadyAtStart() {
       ? row.ready_ids.map(String)
       : [];
 
-    if (!ready.includes(user.id)) {
-      ready.push(user.id);
+    if (!ready.includes(String(user.id))) {
+      ready.push(String(user.id));
     }
 
-    await supabase
+    const { error: upErr } = await supabase
       .from("race_invites")
       .update({ ready_ids: ready })
       .eq("id", row.id);
 
-    const needed = multiplayerLobbyPlayers.filter((p) => p.accepted).length;
+    if (upErr) {
+      console.warn("update ready_ids:", upErr.message);
+      showMissionMessage("No se pudo registrar que llegaste al rosa.", 3000);
+      mpLocalReadySent = false;
+      return;
+    }
+
     showMissionMessage(
-      `Esperando jugadores en el punto rosa: ${ready.length} / ${needed}`,
-      3000
+      `En el punto rosa: ${ready.length} / ${needed}. Esperando a todos...`,
+      4000
     );
 
-    // Si ya están todos (por si el realtime tarda)
-    if (ready.length >= needed && needed >= 2) {
+    // Solo iniciar si YA están todos
+    if (ready.length >= needed) {
       startRaceCountdown();
     }
+    // Si no, no hacer nada: el realtime avisará cuando el otro llegue
   }
 }
 async function startMultiplayerRace(
@@ -25443,36 +25475,29 @@ function subscribeRaceInvitesRealtime() {
         }
 
         // --- Host inició la partida (invitado) ---
-        if (row.status === "started" && row.to_id === user.id) {
-          const config =
-            Object.values(raceConfigs).find(
-              (c: any) =>
-                c.id === row.circuit_id || c.name === row.circuit_name
-            ) || null;
+                if (
+          row.status === "started" &&
+          Array.isArray(row.ready_ids) &&
+          multiplayerRaceActive &&
+          raceGoingToStart &&
+          !countdownActive &&
+          !raceStarted
+        ) {
+          const needed = Math.max(
+            2,
+            multiplayerLobbyPlayers.filter((p) => p.accepted).length
+          );
+          const readyCount = row.ready_ids.length;
 
-          if (!config) return;
-          if (multiplayerRaceActive) return; // ya arrancó
+          showMissionMessage(
+            `En el punto rosa: ${readyCount} / ${needed}. Esperando a todos...`,
+            2500
+          );
 
-          multiplayerSelectedCircuit = config;
-          multiplayerMaxPlayers = row.max_players || 2;
-          multiplayerLobbyPlayers = [
-            {
-              id: "host",
-              name: row.from_name,
-              isHost: true,
-              accepted: true,
-              isLocal: false,
-            },
-            {
-              id: "local",
-              name: "Tú",
-              isHost: false,
-              accepted: true,
-              isLocal: true,
-            },
-          ];
-
-          await startMultiplayerRace(config, multiplayerLobbyPlayers, false);
+          // Solo cuando estén TODOS
+          if (readyCount >= needed) {
+            startRaceCountdown();
+          }
         }
 
         // --- Alguien marcó listo en el punto rosa ---
