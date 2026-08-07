@@ -16942,123 +16942,161 @@ building.material = buildingMat;
     console.log("Mapa cargado:", fileName);
 }
 function createFriendAvatar(friend: any) {
-  // Evitar duplicados
   if (friendAvatars.some((f) => String(f.id) === String(friend.id))) {
     return;
   }
 
-  // Si no trae online, lo tratamos como conectado al aceptarlo
-  
-  const friendMat = mat(
-    `friendMat_${friend.id}`,
-    new BABYLON.Color3(0.1, 0.85, 0.25)
+  // Colores iguales al jugador
+  const bodyBlue = mat(
+    `friendBody_${friend.id}`,
+    new BABYLON.Color3(0.1, 0.45, 1) // mismo avatarMat
+  );
+  const purple = mat(
+    `friendPurple_${friend.id}`,
+    new BABYLON.Color3(0.36, 0.05, 0.75)
+  );
+  const dark = mat(
+    `friendDark_${friend.id}`,
+    new BABYLON.Color3(0.02, 0.02, 0.025)
+  );
+  const glass = mat(
+    `friendGlass_${friend.id}`,
+    new BABYLON.Color3(0.08, 0.16, 0.25)
+  );
+  const tire = mat(
+    `friendTire_${friend.id}`,
+    new BABYLON.Color3(0.01, 0.01, 0.01)
   );
 
-  const carMat = mat(
-    `friendCarMat_${friend.id}`,
-    new BABYLON.Color3(0.78, 0.68, 0.52)
-  );
-
-  const wheelMat = mat(
-    `friendWheelMat_${friend.id}`,
-    new BABYLON.Color3(0.05, 0.05, 0.05)
-  );
-
-  // Posición (si no hay x/z, cerca del jugador)
   const baseX =
-  typeof friend.x === "number" && (friend.x !== 0 || friend.z !== 0)
-    ? friend.x
-    : (typeof player !== "undefined" ? player.position.x + 4 : 0);
-
-const baseZ =
-  typeof friend.z === "number" && (friend.x !== 0 || friend.z !== 0)
-    ? friend.z
-    : (typeof player !== "undefined" ? player.position.z + 4 : 0);
+    typeof friend.x === "number" && (friend.x !== 0 || friend.z !== 0)
+      ? friend.x
+      : player
+        ? player.position.x + 6
+        : 0;
+  const baseZ =
+    typeof friend.z === "number" && (friend.x !== 0 || friend.z !== 0)
+      ? friend.z
+      : player
+        ? player.position.z + 2
+        : 0;
 
   const root = new BABYLON.TransformNode(`friend_${friend.id}`, scene);
   root.position = new BABYLON.Vector3(baseX, 0, baseZ);
 
-  // -------- AVATAR (a pie, al lado del auto) --------
+  // ---- AVATAR (como el tuyo) ----
   const avatarRoot = new BABYLON.TransformNode(
     `friendAvatarRoot_${friend.id}`,
     scene
   );
   avatarRoot.parent = root;
-  avatarRoot.position.x = 3.2;
-
-  const body = BABYLON.MeshBuilder.CreateBox(
-    `friendBody_${friend.id}`,
-    { width: 0.7, height: 1, depth: 0.35 },
-    scene
-  );
-  body.position.y = 0.5;
-  body.material = friendMat;
-  body.parent = avatarRoot;
 
   const head = BABYLON.MeshBuilder.CreateSphere(
     `friendHead_${friend.id}`,
-    { diameter: 0.5 },
+    { diameter: 0.55 },
     scene
   );
-  head.position.y = 1.25;
+  head.position = new BABYLON.Vector3(0, 1.05, 0);
   head.material = skinMat;
   head.parent = avatarRoot;
 
-  // -------- AUTO (mismo estilo mini para todos) --------
+  const body = BABYLON.MeshBuilder.CreateBox(
+    `friendBodyMesh_${friend.id}`,
+    { width: 0.7, height: 0.8, depth: 0.35 },
+    scene
+  );
+  body.position = new BABYLON.Vector3(0, 0.45, 0);
+  body.material = bodyBlue;
+  body.parent = avatarRoot;
+
+  for (const [name, x] of [
+    ["LArm", -0.55],
+    ["RArm", 0.55],
+  ] as const) {
+    const arm = BABYLON.MeshBuilder.CreateBox(
+      `friend${name}_${friend.id}`,
+      { width: 0.22, height: 0.65, depth: 0.22 },
+      scene
+    );
+    arm.position = new BABYLON.Vector3(x, 0.45, 0);
+    arm.material = bodyBlue;
+    arm.parent = avatarRoot;
+  }
+
+  for (const [name, x] of [
+    ["LLeg", -0.22],
+    ["RLeg", 0.22],
+  ] as const) {
+    const leg = BABYLON.MeshBuilder.CreateBox(
+      `friend${name}_${friend.id}`,
+      { width: 0.25, height: 0.75, depth: 0.25 },
+      scene
+    );
+    leg.position = new BABYLON.Vector3(x, -0.35, 0);
+    leg.material = bodyBlue;
+    leg.parent = avatarRoot;
+  }
+
+  // ---- AUTO morado (simplificado estilo Niu Sport) ----
   const carRoot = new BABYLON.TransformNode(
     `friendCarRoot_${friend.id}`,
     scene
   );
   carRoot.parent = root;
-  carRoot.position.y = 0.18;
+  carRoot.scaling = new BABYLON.Vector3(0.8, 0.8, 0.8);
+  carRoot.setEnabled(false); // por defecto a pie; se activa si in_car
 
-  const carBody = BABYLON.MeshBuilder.CreateBox(
-    `friendCarBody_${friend.id}`,
-    { width: 2.2, height: 0.7, depth: 3.6 },
+  const base = BABYLON.MeshBuilder.CreateBox(
+    `friendCarBase_${friend.id}`,
+    { width: 3.1, height: 0.75, depth: 5.2 },
     scene
   );
-  carBody.position.y = 0.55;
-  carBody.material = carMat;
-  carBody.parent = carRoot;
+  base.position.y = 0.45;
+  base.material = purple;
+  base.parent = carRoot;
 
-  const carRoof = BABYLON.MeshBuilder.CreateBox(
-    `friendCarRoof_${friend.id}`,
-    { width: 1.9, height: 0.55, depth: 1.8 },
+  const cabin = BABYLON.MeshBuilder.CreateBox(
+    `friendCabin_${friend.id}`,
+    { width: 2.35, height: 0.9, depth: 2.05 },
     scene
   );
-  carRoof.position.y = 1.1;
-  carRoof.position.z = -0.15;
-  carRoof.material = carMat;
-  carRoof.parent = carRoot;
+  cabin.position = new BABYLON.Vector3(0, 1.15, -0.35);
+  cabin.material = glass;
+  cabin.parent = carRoot;
 
-  // Ruedas simples
-  const wheelPositions = [
-    { x: -1.0, z: 1.2 },
-    { x: 1.0, z: 1.2 },
-    { x: -1.0, z: -1.2 },
-    { x: 1.0, z: -1.2 },
-  ];
+  const roof = BABYLON.MeshBuilder.CreateBox(
+    `friendRoof_${friend.id}`,
+    { width: 2.15, height: 0.18, depth: 1.65 },
+    scene
+  );
+  roof.position = new BABYLON.Vector3(0, 1.68, -0.35);
+  roof.material = dark;
+  roof.parent = carRoot;
 
-  wheelPositions.forEach((wp, i) => {
+  for (const [x, z] of [
+    [-1.15, 1.6],
+    [1.15, 1.6],
+    [-1.15, -1.6],
+    [1.15, -1.6],
+  ]) {
     const wheel = BABYLON.MeshBuilder.CreateCylinder(
-      `friendWheel_${friend.id}_${i}`,
-      { height: 0.28, diameter: 0.55 },
+      `friendWheel_${friend.id}_${x}_${z}`,
+      { height: 0.35, diameter: 0.75 },
       scene
     );
     wheel.rotation.z = Math.PI / 2;
-    wheel.position.set(wp.x, 0.28, wp.z);
-    wheel.material = wheelMat;
+    wheel.position.set(x, 0.28, z);
+    wheel.material = tire;
     wheel.parent = carRoot;
-  });
+  }
 
-  // -------- NOMBRE encima del AUTO --------
+  // Nombre
   const labelTexture = new BABYLON.DynamicTexture(
-    `friendLabelTexture_${friend.id}`,
+    `friendLabelTex_${friend.id}`,
     { width: 512, height: 128 },
     scene,
     true
   );
-
   const ctx = labelTexture.getContext() as CanvasRenderingContext2D;
   ctx.clearRect(0, 0, 512, 128);
   ctx.fillStyle = "rgba(0,0,0,0.75)";
@@ -17084,17 +17122,20 @@ const baseZ =
     { width: 4.2, height: 0.9 },
     scene
   );
-  label.position.y = 2.6; // encima del auto
+  label.position.y = 2.8;
   label.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
   label.material = labelMat;
-  label.parent = carRoot; // nombre sobre el auto
+  label.parent = root;
 
   friendAvatars.push({
     id: friend.id,
+    cloudId: friend.cloudId,
     name: friend.name,
     root,
+    avatarRoot,
+    carRoot,
     label,
-  });
+  } as any);
 }
 function updateSpecialBuildingLights() {
   if (!player || !car) return;
@@ -20415,6 +20456,8 @@ async function setupInitialGame(city: "lima" | "maturin") {
   // Cargar progreso desde Supabase (gasolina, monedas, ciudades)
   await loadProfileFromCloud();
   await loadFriendsFromCloud();
+  await loadWorldChatFromCloud();
+subscribeWorldChatRealtime();
 
   if (city === "lima") {
   currentMapName = "miraflores";
@@ -22137,23 +22180,30 @@ function renderWorldChat() {
   worldChatMessagesDiv.scrollTop = worldChatMessagesDiv.scrollHeight;
 }
 
-function sendWorldChatMessage() {
+async function sendWorldChatMessage() {
   const text = worldChatInput.value.trim();
-
   if (!text) return;
 
-  const messages = getWorldChatMessages();
+  const user =
+    localStorage.getItem("niuwd_session_user") ||
+    localStorage.getItem("niuwd_username") ||
+    worldChatUsername ||
+    "Invitado";
 
-  messages.push({
-    user: worldChatUsername,
-    text,
-    time: Date.now(),
+  const { error } = await supabase.from("world_chat").insert({
+    user_name: user,
+    body: text,
   });
 
-  saveWorldChatMessages(messages);
+  if (error) {
+    console.warn("world_chat send:", error.message);
+    alert("No se pudo enviar el mensaje");
+    return;
+  }
 
   worldChatInput.value = "";
-  renderWorldChat();
+  await trimWorldChat();
+  await loadWorldChatFromCloud();
 }
 
 worldChatSend.onclick = sendWorldChatMessage;
