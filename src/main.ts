@@ -25358,7 +25358,9 @@ async function loadFriendsFromCloud() {
 
   const accepted = (rows || []).filter((r) => r.status === "accepted");
   const pendingToMe = (rows || []).filter(
-    (r) => r.status === "pending" && r.addressee_id === user.id
+    (r) =>
+      r.status === "pending" &&
+      String(r.addressee_id) === String(user.id)
   );
 
   // IDs de los otros usuarios
@@ -25408,7 +25410,7 @@ async function loadFriendsFromCloud() {
     return {
       id: index + 1,
       cloudId: key,
-      friendshipId: r.id,
+      friendshipId: String(r.id), // id real de la fila
       name: profilesMap[key] || "Usuario",
       online: false,
       x: 0,
@@ -26318,18 +26320,19 @@ requestsBtn.onclick = async () => {
 
   let html = "";
 
-  // --- Amistades pendientes ---
   if (friendRequests.length === 0 && raceInvites.length === 0) {
     html = "<p>No hay solicitudes pendientes.</p>";
   }
 
+  // --- Amistades pendientes ---
   for (const request of friendRequests) {
+    const fid = (request as any).friendshipId || request.id;
     html += `
   <div style="margin-bottom:12px;">
     <strong>${request.name}</strong><br>
     🟢 Solicitud de amistad<br><br>
-    <button id="accept_${request.id}">Aceptar</button>
-    <button id="reject_${request.id}">Rechazar</button>
+    <button id="accept_${fid}">Aceptar</button>
+    <button id="reject_${fid}">Rechazar</button>
   </div>`;
   }
 
@@ -26346,9 +26349,41 @@ requestsBtn.onclick = async () => {
 
   openSocialWindow("Solicitudes", html);
 
-  // ... deja el código de accept/reject de amistad igual ...
+  // --- Botones de amistad ---
+  for (const request of friendRequests) {
+    const fid = String((request as any).friendshipId || request.id);
 
-  // Botones de carrera
+    const a = document.getElementById(`accept_${fid}`) as HTMLButtonElement | null;
+    const r = document.getElementById(`reject_${fid}`) as HTMLButtonElement | null;
+
+    if (a) {
+      a.onclick = async () => {
+        a.disabled = true;
+        await acceptFriendRequestCloud(fid);
+        openSocialWindow(
+          "Amistad",
+          `<p>Aceptaste a <strong>${request.name}</strong>.</p>`
+        );
+        // Refrescar lista
+        setTimeout(() => {
+          void (requestsBtn as any).onclick?.();
+        }, 400);
+      };
+    }
+
+    if (r) {
+      r.onclick = async () => {
+        r.disabled = true;
+        await rejectFriendRequestCloud(fid);
+        openSocialWindow(
+          "Solicitud",
+          `<p>Rechazaste a <strong>${request.name}</strong>.</p>`
+        );
+      };
+    }
+  }
+
+  // --- Botones de carrera ---
   for (const inv of raceInvites) {
     const a = document.getElementById(`raceAccept_${inv.id}`) as HTMLButtonElement | null;
     const r = document.getElementById(`raceReject_${inv.id}`) as HTMLButtonElement | null;
