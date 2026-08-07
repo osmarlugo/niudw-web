@@ -1959,44 +1959,109 @@ function openMultiplayerInvitesPanel() {
     }
   }, 50);
 }
-function tryStartMultiplayerRace() {
+async function tryStartMultiplayerRace() {
   if (!multiplayerSelectedCircuit) return;
-
-  // En local: al iniciar, damos por aceptados a los invitados del lobby
-  // (en online real solo contarían los que aceptaron de verdad)
-  for (const p of multiplayerLobbyPlayers) {
-    if (!p.isLocal) p.accepted = true;
-  }
 
   const accepted = multiplayerLobbyPlayers.filter((p) => p.accepted);
 
   if (accepted.length < 2) {
-    showMissionMessage("Se necesitan mínimo 2 jugadores.", 4000);
+    showMissionMessage("Se necesitan mínimo 2 jugadores listos.", 4000);
     return;
   }
 
   if (accepted.length > multiplayerMaxPlayers) {
-    showMissionMessage(
-      `Máximo ${multiplayerMaxPlayers} jugadores.`,
-      4000
-    );
+    showMissionMessage(`Máximo ${multiplayerMaxPlayers} jugadores.`, 4000);
     return;
   }
 
-  socialWindow.style.display = "none";
-  startMultiplayerRace(multiplayerSelectedCircuit, accepted);
-}
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return;
 
+  // Marcar invitaciones de este host como "started"
+  await supabase
+    .from("race_invites")
+    .update({
+      status: "started",
+      ready_ids: [],
+    })
+    .eq("from_id", user.id)
+    .eq("circuit_id", multiplayerSelectedCircuit.id)
+    .in("status", ["pending", "accepted"]);
+
+  socialWindow.style.display = "none";
+
+  // El host arranca en su cliente
+  await startMultiplayerRace(
+    multiplayerSelectedCircuit,
+    accepted,
+    true
+  );
+}
+let mpLocalReadySent = false;
+
+async function markMyselfReadyAtStart() {
+  if (mpLocalReadySent) return;
+  if (!multiplayerRaceActive) return;
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return;
+
+  mpLocalReadySent = true;
+
+  // Traer invitaciones started donde participo
+  const { data: rows } = await supabase
+    .from("race_invites")
+    .select("id, ready_ids, from_id, to_id, max_players")
+    .eq("status", "started")
+    .or(`from_id.eq.${user.id},to_id.eq.${user.id}`);
+
+  if (!rows || rows.length === 0) {
+    // Si no hay fila, al menos arranca en local (fallback)
+    startRaceCountdown();
+    return;
+  }
+
+  for (const row of rows) {
+    const ready: string[] = Array.isArray(row.ready_ids)
+      ? row.ready_ids.map(String)
+      : [];
+
+    if (!ready.includes(user.id)) {
+      ready.push(user.id);
+    }
+
+    await supabase
+      .from("race_invites")
+      .update({ ready_ids: ready })
+      .eq("id", row.id);
+
+    const needed = multiplayerLobbyPlayers.filter((p) => p.accepted).length;
+    showMissionMessage(
+      `Esperando jugadores en el punto rosa: ${ready.length} / ${needed}`,
+      3000
+    );
+
+    // Si ya están todos (por si el realtime tarda)
+    if (ready.length >= needed && needed >= 2) {
+      startRaceCountdown();
+    }
+  }
+}
 async function startMultiplayerRace(
   config: RaceConfig,
-  players: MultiplayerLobbyPlayer[]
+  players: MultiplayerLobbyPlayer[],
+  asHost: boolean = true
 ) {
   await loadGpsGraph();
 
   cancelCurrentMission();
 
   multiplayerRaceActive = true;
-  multiplayerIsHost = true;
+  multiplayerIsHost = asHost;
   multiplayerSelectedCircuit = config;
   multiplayerLobbyPlayers = players;
 
@@ -2008,13 +2073,16 @@ async function startMultiplayerRace(
   raceLap = 1;
   raceTarget = "finish";
 
+  // Importante: sin bots
+  clearRaceBots();
+
   if (raceStartLine) raceStartLine.dispose();
   if (raceFinishLine) raceFinishLine.dispose();
 
   raceStartLine = createRaceLine(
     config.start.lon,
     config.start.lat,
-    new BABYLON.Color3(1, 0.2, 0.75) // aro / línea rosa-magenta
+    new BABYLON.Color3(1, 0.2, 0.75) // rosa
   );
 
   raceFinishLine = createRaceLine(
@@ -2024,40 +2092,11 @@ async function startMultiplayerRace(
   );
   raceFinishLine.setEnabled(false);
 
-  clearRaceBots();
-
-  const startPos = lonLatToWorld(config.start.lon, config.start.lat);
-  const finishPos = lonLatToWorld(config.finish.lon, config.finish.lat);
-
-  const forwardDir = finishPos.subtract(startPos);
-  forwardDir.y = 0;
-  if (forwardDir.length() > 0.001) forwardDir.normalize();
-
-  const sideDir = new BABYLON.Vector3(-forwardDir.z, 0, forwardDir.x);
-  const gridCenter = getNearestGpsRoadPoint(startPos);
-
-  // Crear autos de los otros jugadores (no el local)
-  let colorIndex = 0;
-  for (const player of players) {
-    if (player.isLocal) continue;
-
-    const color =
-      multiplayerPlayerColors[colorIndex % multiplayerPlayerColors.length];
-    colorIndex++;
-
-    const offset = (colorIndex - 1) * 2.8 - 2;
-    const spawn = gridCenter
-      .add(forwardDir.scale(8))
-      .add(sideDir.scale(offset));
-
-    createRaceBot(spawn, color, 0);
-  }
-
   setGpsDestination(config.start.lon, config.start.lat);
   showMultiplayerRaceMissionCard();
   showMissionMessage(
-    "Circuito Multijugador: ve al punto de inicio (línea/rosa).",
-    5000
+    "Ve al punto rosa. La carrera inicia cuando TODOS los jugadores lo toquen.",
+    6000
   );
 }
 
@@ -2066,6 +2105,8 @@ function stopMultiplayerRace() {
   multiplayerIsHost = false;
   multiplayerSelectedCircuit = null;
   multiplayerLobbyPlayers = [];
+  mpLocalReadySent = false;
+  clearRaceBots();
 }
 const routeMissionConfigs: Record<string, RouteMissionConfig> = {
 
@@ -23881,14 +23922,20 @@ function updateRaceCircuit() {
   if (!car) return;
   if (!raceMissionActive) return;
 
-  if (raceGoingToStart && raceStartLine && !countdownActive) {
+    if (raceGoingToStart && raceStartLine && !countdownActive) {
     const distStart = BABYLON.Vector3.Distance(
       car.position,
       raceStartLine.position
     );
 
     if (distStart < 8) {
-      startRaceCountdown();
+      if (multiplayerRaceActive) {
+        // Multijugador: marcarme como listo, NO iniciar solo
+        void markMyselfReadyAtStart();
+      } else {
+        // Circuito normal (1 jugador + bots)
+        startRaceCountdown();
+      }
     }
 
     return;
@@ -25331,20 +25378,17 @@ function subscribeRaceInvitesRealtime() {
         schema: "public",
         table: "race_invites",
       },
-      (payload) => {
+      async (payload) => {
         const row = payload.new as any;
         if (!row) return;
 
-        // Si soy el host y alguien respondió mi invitación
-        if (row.status === "accepted") {
-          const p = multiplayerLobbyPlayers.find(
-            (x) => !x.isLocal && !x.accepted
-          );
-          // Mejor: emparejar por nombre
-          const byName = multiplayerLobbyPlayers.find(
-            (x) => x.name === row.to_id // no coincide
-          );
-          // Marcar por invite / primer pendiente con mismo circuito
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (!user) return;
+
+        // --- Aceptó / rechazó (host) ---
+        if (row.status === "accepted" && row.from_id === user.id) {
           for (const pl of multiplayerLobbyPlayers) {
             if (!pl.isLocal && !pl.accepted) {
               pl.accepted = true;
@@ -25355,12 +25399,67 @@ function subscribeRaceInvitesRealtime() {
           if (multiplayerSelectedCircuit) renderMultiplayerLobbyWindow();
         }
 
-        if (row.status === "rejected") {
+        if (row.status === "rejected" && row.from_id === user.id) {
           multiplayerLobbyPlayers = multiplayerLobbyPlayers.filter(
             (p) => p.isLocal || p.accepted
           );
           showMissionMessage("Tu amigo ha cancelado la solicitud", 4000);
           if (multiplayerSelectedCircuit) renderMultiplayerLobbyWindow();
+        }
+
+        // --- Host inició la partida (invitado) ---
+        if (row.status === "started" && row.to_id === user.id) {
+          const config =
+            Object.values(raceConfigs).find(
+              (c: any) =>
+                c.id === row.circuit_id || c.name === row.circuit_name
+            ) || null;
+
+          if (!config) return;
+          if (multiplayerRaceActive) return; // ya arrancó
+
+          multiplayerSelectedCircuit = config;
+          multiplayerMaxPlayers = row.max_players || 2;
+          multiplayerLobbyPlayers = [
+            {
+              id: "host",
+              name: row.from_name,
+              isHost: true,
+              accepted: true,
+              isLocal: false,
+            },
+            {
+              id: "local",
+              name: "Tú",
+              isHost: false,
+              accepted: true,
+              isLocal: true,
+            },
+          ];
+
+          await startMultiplayerRace(config, multiplayerLobbyPlayers, false);
+        }
+
+        // --- Alguien marcó listo en el punto rosa ---
+        if (
+          row.status === "started" &&
+          Array.isArray(row.ready_ids) &&
+          multiplayerRaceActive &&
+          raceGoingToStart &&
+          !countdownActive
+        ) {
+          const needed = multiplayerLobbyPlayers.filter((p) => p.accepted)
+            .length;
+          const readyCount = row.ready_ids.length;
+
+          showMissionMessage(
+            `En el punto rosa: ${readyCount} / ${needed}`,
+            2500
+          );
+
+          if (readyCount >= needed && needed >= 2) {
+            startRaceCountdown();
+          }
         }
       }
     )
