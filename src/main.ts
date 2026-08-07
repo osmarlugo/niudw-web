@@ -1829,7 +1829,94 @@ async function loadRaceInvitesFromCloud() {
   }
   return data || [];
 }
+let mpWaitForStartTimer: ReturnType<typeof setInterval> | null = null;
 
+function stopWaitingForRaceStart() {
+  if (mpWaitForStartTimer) {
+    clearInterval(mpWaitForStartTimer);
+    mpWaitForStartTimer = null;
+  }
+}
+
+function startWaitingForRaceStart() {
+  stopWaitingForRaceStart();
+
+  mpWaitForStartTimer = setInterval(async () => {
+    if (multiplayerRaceActive) {
+      stopWaitingForRaceStart();
+      return;
+    }
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return;
+
+    const { data: rows, error } = await supabase
+      .from("race_invites")
+      .select("*")
+      .eq("to_id", user.id)
+      .eq("status", "started")
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    if (error) {
+      console.warn("poll race start:", error.message);
+      return;
+    }
+
+    if (!rows || rows.length === 0) return;
+
+    const row = rows[0];
+    stopWaitingForRaceStart();
+    await beginRaceAsGuest(row);
+  }, 2000); // cada 2 segundos
+}
+
+async function beginRaceAsGuest(row: any) {
+  if (multiplayerRaceActive) return;
+
+  const config =
+    Object.values(raceConfigs).find(
+      (c: any) => c.id === row.circuit_id || c.name === row.circuit_name
+    ) || null;
+
+  if (!config) {
+    console.warn("Circuito no encontrado:", row.circuit_id, row.circuit_name);
+    showMissionMessage("No se encontró el circuito de la partida.", 4000);
+    return;
+  }
+
+  multiplayerSelectedCircuit = config;
+  multiplayerIsHost = false;
+  multiplayerMaxPlayers = row.max_players || 2;
+  multiplayerLobbyPlayers = [
+    {
+      id: "host",
+      name: row.from_name,
+      isHost: true,
+      accepted: true,
+      isLocal: false,
+    },
+    {
+      id: "local",
+      name: "Tú",
+      isHost: false,
+      accepted: true,
+      isLocal: true,
+    },
+  ];
+
+  if (typeof socialWindow !== "undefined" && socialWindow) {
+    socialWindow.style.display = "none";
+  }
+
+  await startMultiplayerRace(config, multiplayerLobbyPlayers, false);
+  showMissionMessage(
+    "¡Partida iniciada! Ve al punto rosa. Empieza cuando todos lo toquen.",
+    6000
+  );
+}
 async function respondRaceInvite(inviteId: string, accept: boolean) {
   const {
     data: { user },
@@ -1886,9 +1973,8 @@ async function respondRaceInvite(inviteId: string, accept: boolean) {
     },
   ];
 
-  showMissionMessage("Invitación aceptada. Esperando al anfitrión.", 4000);
+    showMissionMessage("Invitación aceptada. Esperando al anfitrión.", 4000);
 
-  // Solo mensaje de espera — SIN botones de iniciar/invitar
   openSocialWindow(
     "Esperando partida",
     `
@@ -1900,10 +1986,12 @@ async function respondRaceInvite(inviteId: string, accept: boolean) {
       </p>
       <p style="font-size:13px;color:#aaa;margin-top:12px;">
         Espera a que el anfitrión pulse <strong>Iniciar circuito</strong>.
-        Entonces se te enviará al punto rosa automáticamente.
       </p>
     `
   );
+
+  // NUEVO: revisar cada 2s si el host ya inició
+  startWaitingForRaceStart();
 }
 
 function openMultiplayerInvitesPanel() {
@@ -2004,35 +2092,35 @@ async function tryStartMultiplayerRace() {
     return;
   }
 
-  if (accepted.length > multiplayerMaxPlayers) {
-    showMissionMessage(`Máximo ${multiplayerMaxPlayers} jugadores.`, 4000);
-    return;
-  }
-
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return;
 
-  // Marcar invitaciones de este host como "started"
-  await supabase
+  mpLocalReadySent = false;
+
+  // Actualizar TODAS las invitaciones aceptadas de este host (sin filtrar solo por circuit_id)
+  const { data: updated, error } = await supabase
     .from("race_invites")
     .update({
       status: "started",
       ready_ids: [],
     })
     .eq("from_id", user.id)
-    .eq("circuit_id", multiplayerSelectedCircuit.id)
-    .in("status", ["pending", "accepted"]);
+    .in("status", ["pending", "accepted"])
+    .select("id, to_id, circuit_id, status");
+
+  if (error) {
+    console.error("Error al iniciar partida:", error.message);
+    alert("No se pudo avisar a los invitados: " + error.message);
+    return;
+  }
+
+  console.log("Invitaciones puestas en started:", updated);
 
   socialWindow.style.display = "none";
 
-  // El host arranca en su cliente
-  await startMultiplayerRace(
-    multiplayerSelectedCircuit,
-    accepted,
-    true
-  );
+  await startMultiplayerRace(multiplayerSelectedCircuit, accepted, true);
 }
 let mpLocalReadySent = false;
 
@@ -25486,52 +25574,14 @@ function subscribeRaceInvitesRealtime() {
           }
         }
 
-        // --- Host inició: INVITADO crea el aro rosa ---
+                // --- Host inició: INVITADO crea el aro rosa ---
         if (
           row.status === "started" &&
-          row.to_id === user.id &&
+          String(row.to_id) === String(user.id) &&
           !multiplayerRaceActive
         ) {
-          const config =
-            Object.values(raceConfigs).find(
-              (c: any) =>
-                c.id === row.circuit_id || c.name === row.circuit_name
-            ) || null;
-
-          if (!config) {
-            console.warn("Circuito no encontrado:", row.circuit_id, row.circuit_name);
-            return;
-          }
-
-          multiplayerSelectedCircuit = config;
-          multiplayerIsHost = false;
-          multiplayerMaxPlayers = row.max_players || 2;
-          multiplayerLobbyPlayers = [
-            {
-              id: "host",
-              name: row.from_name,
-              isHost: true,
-              accepted: true,
-              isLocal: false,
-            },
-            {
-              id: "local",
-              name: "Tú",
-              isHost: false,
-              accepted: true,
-              isLocal: true,
-            },
-          ];
-
-          if (typeof socialWindow !== "undefined" && socialWindow) {
-            socialWindow.style.display = "none";
-          }
-
-          await startMultiplayerRace(config, multiplayerLobbyPlayers, false);
-          showMissionMessage(
-            "¡Partida iniciada! Ve al punto rosa. La carrera empieza cuando todos lo toquen.",
-            6000
-          );
+          stopWaitingForRaceStart();
+          await beginRaceAsGuest(row);
         }
 
         // --- Alguien llegó al rosa (ready_ids) ---
