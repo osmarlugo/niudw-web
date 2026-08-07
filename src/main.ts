@@ -1250,6 +1250,10 @@ let raceGoingToStart = false;
 let raceStarted = false;
 let raceCountdownDone = false;
 function cancelCurrentMission() {
+  // ===== Multijugador =====
+  if (multiplayerRaceActive || multiplayerSelectedCircuit) {
+    void cancelMultiplayerRaceSession();
+  }
 
   // Carrera
   raceMissionActive = false;
@@ -1874,6 +1878,19 @@ function startWaitingForRaceStart() {
 }
 
 async function beginRaceAsGuest(row: any) {
+  // Si ya estábamos en una carrera vieja, la cerramos y seguimos
+  if (multiplayerRaceActive) {
+    multiplayerRaceActive = false;
+    mpLocalReadySent = false;
+    if (raceStartLine) {
+      raceStartLine.dispose();
+      raceStartLine = null;
+    }
+    if (raceFinishLine) {
+      raceFinishLine.dispose();
+      raceFinishLine = null;
+    }
+  }
   if (multiplayerRaceActive) return;
 
   const config =
@@ -1972,7 +1989,9 @@ async function respondRaceInvite(inviteId: string, accept: boolean) {
       isLocal: true,
     },
   ];
-
+      multiplayerRaceActive = false;
+  mpLocalReadySent = false;
+  startWaitingForRaceStart();
     showMissionMessage("Invitación aceptada. Esperando al anfitrión.", 4000);
 
   openSocialWindow(
@@ -2098,6 +2117,7 @@ async function tryStartMultiplayerRace() {
   if (!user) return;
 
   mpLocalReadySent = false;
+  multiplayerRaceActive = false;
 
   // Actualizar TODAS las invitaciones aceptadas de este host (sin filtrar solo por circuit_id)
   const { data: updated, error } = await supabase
@@ -2261,14 +2281,35 @@ async function startMultiplayerRace(
     6000
   );
 }
+async function cancelMultiplayerRaceSession() {
+  stopWaitingForRaceStart();
+  mpLocalReadySent = false;
 
-function stopMultiplayerRace() {
   multiplayerRaceActive = false;
   multiplayerIsHost = false;
   multiplayerSelectedCircuit = null;
   multiplayerLobbyPlayers = [];
-  mpLocalReadySent = false;
+
+  // Cerrar invitaciones abiertas en la nube para poder reiniciar
+  try {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (user) {
+      await supabase
+        .from("race_invites")
+        .update({ status: "cancelled", ready_ids: [] })
+        .or(`from_id.eq.${user.id},to_id.eq.${user.id}`)
+        .in("status", ["pending", "accepted", "started"]);
+    }
+  } catch (e) {
+    console.warn("cancel race invites:", e);
+  }
+
   clearRaceBots();
+}
+function stopMultiplayerRace() {
+  void cancelMultiplayerRaceSession();
 }
 const routeMissionConfigs: Record<string, RouteMissionConfig> = {
 
@@ -20783,10 +20824,28 @@ if (city === "maturin") {
   createNiuSportCar(new BABYLON.Vector3(4, 0.18, 20));
 }
   setupCarSounds();
-
   createMissionSystem();
+  spawnBotsForZone(currentZone);
 
-    spawnBotsForZone(currentZone);
+  // Caseta y objetos de Kennedy ANTES de amigos (por si fallan)
+  try {
+    createGasStationAtLonLat(
+      KENNEDY_GAS_STATION.lon,
+      KENNEDY_GAS_STATION.lat,
+      KENNEDY_GAS_STATION.rotationY
+    );
+    createSalesBoothAtLonLat(
+      -77.02878209374222,
+      -12.118881789293624
+    );
+    createCentrixBillboardAtLonLat(
+      -77.02158113338712,
+      -12.129906426232017
+    );
+    console.log("✅ Caseta Real Estate creada");
+  } catch (e) {
+    console.error("❌ Error creando caseta Real Estate:", e);
+  }
 
   for (const friend of friends) {
     createFriendAvatar(friend);
