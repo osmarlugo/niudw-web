@@ -1250,8 +1250,9 @@ let raceGoingToStart = false;
 let raceStarted = false;
 let raceCountdownDone = false;
 function cancelCurrentMission() {
-  // ===== Multijugador =====
-  if (multiplayerRaceActive || multiplayerSelectedCircuit) {
+    // ===== Multijugador =====
+  // Solo al cancelar de verdad (tecla 3), NO al iniciar la carrera
+  if (multiplayerRaceActive) {
     void cancelMultiplayerRaceSession();
   }
 
@@ -2153,18 +2154,14 @@ async function markMyselfReadyAtStart() {
   } = await supabase.auth.getUser();
   if (!user) return;
 
-  // Cuántos jugadores hacen falta (mínimo 2)
   const needed = Math.max(
     2,
-    multiplayerLobbyPlayers.filter((p) => p.accepted).length
+    multiplayerLobbyPlayers.filter((p) => p.accepted).length || 2
   );
 
-  // Mensaje siempre (aunque ya te hayas marcado)
   if (mpLocalReadySent) {
-    showMissionMessage(
-      `Esperando a los demás en el punto rosa... (${needed} jugadores)`,
-      2500
-    );
+    // Releer por si el otro ya llegó
+    await checkReadyAndMaybeStart(user.id, needed);
     return;
   }
 
@@ -2172,31 +2169,43 @@ async function markMyselfReadyAtStart() {
 
   const { data: rows, error } = await supabase
     .from("race_invites")
-    .select("id, ready_ids, from_id, to_id, max_players")
+    .select("id, ready_ids, from_id, to_id")
     .eq("status", "started")
     .or(`from_id.eq.${user.id},to_id.eq.${user.id}`);
 
   if (error) {
     console.warn("ready_ids:", error.message);
     showMissionMessage("Error al marcar listo. Revisa la conexión.", 3000);
-    mpLocalReadySent = false; // permitir reintentar
+    mpLocalReadySent = false;
     return;
   }
 
-  // IMPORTANTE: si no hay filas, NO iniciar el conteo
   if (!rows || rows.length === 0) {
     showMissionMessage(
       "Estás en el punto rosa. Esperando al otro jugador...",
       4000
     );
-    // No llamamos startRaceCountdown()
+    // Reintentar en 1.5s por si el status aún no está en started
+    setTimeout(() => {
+      mpLocalReadySent = false;
+      void markMyselfReadyAtStart();
+    }, 1500);
     return;
   }
 
   for (const row of rows) {
-    const ready: string[] = Array.isArray(row.ready_ids)
-      ? row.ready_ids.map(String)
-      : [];
+    // Leer de nuevo justo antes de escribir (evita pisar al otro)
+    const { data: fresh } = await supabase
+      .from("race_invites")
+      .select("ready_ids")
+      .eq("id", row.id)
+      .single();
+
+    const ready: string[] = Array.isArray(fresh?.ready_ids)
+      ? fresh.ready_ids.map(String)
+      : Array.isArray(row.ready_ids)
+        ? row.ready_ids.map(String)
+        : [];
 
     if (!ready.includes(String(user.id))) {
       ready.push(String(user.id));
@@ -2214,22 +2223,49 @@ async function markMyselfReadyAtStart() {
       return;
     }
 
-    showMissionMessage(
-      `En el punto rosa: ${ready.length} / ${needed}. Esperando a todos...`,
-      4000
-    );
-
-        // Solo si hay 2 o más IDs distintos en ready
     const uniqueReady = [...new Set(ready.map(String))];
     showMissionMessage(
       `En el punto rosa: ${uniqueReady.length} / ${needed}. Esperando a todos...`,
       4000
     );
 
-    if (uniqueReady.length >= needed && uniqueReady.length >= 2) {
+    if (uniqueReady.length >= needed) {
       startRaceCountdown();
+      return;
     }
-    // Si no, no hacer nada: el realtime avisará cuando el otro llegue
+  }
+
+  // Si aún falta alguien, revisar otra vez en 2s (por si realtime falla)
+  setTimeout(() => {
+    void checkReadyAndMaybeStart(user.id, needed);
+  }, 2000);
+}
+
+async function checkReadyAndMaybeStart(myId: string, needed: number) {
+  if (!multiplayerRaceActive || countdownActive || raceStarted) return;
+
+  const { data: rows } = await supabase
+    .from("race_invites")
+    .select("id, ready_ids")
+    .eq("status", "started")
+    .or(`from_id.eq.${myId},to_id.eq.${myId}`);
+
+  if (!rows || rows.length === 0) return;
+
+  for (const row of rows) {
+    const ready = Array.isArray(row.ready_ids)
+      ? [...new Set(row.ready_ids.map(String))]
+      : [];
+
+    showMissionMessage(
+      `En el punto rosa: ${ready.length} / ${needed}. Esperando a todos...`,
+      2500
+    );
+
+    if (ready.length >= needed) {
+      startRaceCountdown();
+      return;
+    }
   }
 }
 async function startMultiplayerRace(
@@ -2237,11 +2273,25 @@ async function startMultiplayerRace(
   players: MultiplayerLobbyPlayer[],
   asHost: boolean = true
 ) {
-  await loadGpsGraph();
+    await loadGpsGraph();
 
-  cancelCurrentMission();
+  // Limpia otras misiones SIN cancelar invitaciones multijugador
+  raceMissionActive = false;
+  raceGoingToStart = false;
+  raceStarted = false;
+  raceCountdownDone = false;
+  countdownActive = false;
+  clearRaceBots();
+  if (raceStartLine) {
+    raceStartLine.dispose();
+    raceStartLine = null;
+  }
+  if (raceFinishLine) {
+    raceFinishLine.dispose();
+    raceFinishLine = null;
+  }
+
   mpLocalReadySent = false;
-
   multiplayerRaceActive = true;
   multiplayerIsHost = asHost;
   multiplayerSelectedCircuit = config;
@@ -20827,28 +20877,91 @@ if (city === "maturin") {
   createMissionSystem();
   spawnBotsForZone(currentZone);
 
-  // Caseta y objetos de Kennedy ANTES de amigos (por si fallan)
+    // ===== Landmarks de Kennedy (ANTES de amigos) =====
   try {
     createGasStationAtLonLat(
       KENNEDY_GAS_STATION.lon,
       KENNEDY_GAS_STATION.lat,
       KENNEDY_GAS_STATION.rotationY
     );
+
     createSalesBoothAtLonLat(
       -77.02878209374222,
       -12.118881789293624
     );
+
     createCentrixBillboardAtLonLat(
       -77.02158113338712,
       -12.129906426232017
     );
-    console.log("✅ Caseta Real Estate creada");
+
+    createWebAuraAtLonLat(
+      -77.02146205441015,
+      -12.12989534544568,
+      "https://eeinmobiliaria.com/proyectos/centrix-28/"
+    );
+
+    createModernOrangeBuildingAtLonLat(
+      -77.02146205441015,
+      -12.12989534544568
+    );
+
+    createStreetSignBetweenCoords(
+      "Av. Diagonal",
+      -77.02941749930515,
+      -12.119699686253044,
+      -77.02927991625387,
+      -12.119805535265524
+    );
+
+    // Niu Travel (usa dos puntos distintos para que no salga degenerado)
+    createNiuTravelBoothBetweenCoords(
+      -77.03495579750306,
+      -12.123218777824798,
+      -77.03470,
+      -12.12340,
+      -1
+    );
+
+    createNiuMarketAtLonLat(
+      -77.03343757265849,
+      -12.119262055352637,
+      -3
+    );
+
+    createNiuStoreAtLonLat(
+      "NIU Cafe",
+      -77.02756894510748,
+      -12.126018298226239,
+      "cafe",
+      new BABYLON.Color3(0.45, 0.28, 0.12),
+      -3
+    );
+
+    createBuildingBetweenCoords(
+      "niuWdBuilding",
+      -77.02886031373137,
+      -12.120414902995638,
+      -77.02888713582045,
+      -12.12101019132289,
+      11,
+      new BABYLON.Color3(0.05, 0.22, 0.8),
+      "Niu Digital World",
+      -3.13
+    );
+
+    console.log("✅ Landmarks Kennedy creados (Travel, Market, Digital World, etc.)");
   } catch (e) {
-    console.error("❌ Error creando caseta Real Estate:", e);
+    console.error("❌ Error creando landmarks Kennedy:", e);
   }
 
+  // Amigos / presencia (si fallan, los edificios ya existen)
   for (const friend of friends) {
-    createFriendAvatar(friend);
+    try {
+      createFriendAvatar(friend);
+    } catch (e) {
+      console.warn("Avatar amigo:", e);
+    }
   }
   subscribeFriendsPresence();
 
@@ -20860,73 +20973,6 @@ if (city === "maturin") {
   }
 
   camera.target = player.position;
-  createModernOrangeBuildingAtLonLat(
-  -77.02146205441015,
-  -12.12989534544568
-);
-
-const gasStationPosition =
-  createGasStationAtLonLat(
-    KENNEDY_GAS_STATION.lon,
-    KENNEDY_GAS_STATION.lat,
-    KENNEDY_GAS_STATION.rotationY
-  );
-  
-createSalesBoothAtLonLat(
-  -77.02878209374222,
-  -12.118881789293624
-);
-
-createCentrixBillboardAtLonLat(
-  -77.02158113338712,
-  -12.129906426232017
-);
-
-createWebAuraAtLonLat(
-  -77.02146205441015,
-  -12.12989534544568,
-  "https://eeinmobiliaria.com/proyectos/centrix-28/"
-);
-
-createStreetSignBetweenCoords(
-  "Av. Diagonal",
-  -77.02941749930515,
-  -12.119699686253044,
-  -77.02927991625387,
-  -12.119805535265524
-);
-createNiuTravelBoothBetweenCoords(
-  -77.03495579750306,
-  -12.123218777824798,
-  -77.03495579750306,
-  -12.123218777824798,
-  -1
-  );
-createNiuMarketAtLonLat(
-  -77.03343757265849,
-  -12.119262055352637,
-  -3
-);
-
-createNiuStoreAtLonLat(
-  "NIU Cafe",
-  -77.02756894510748,
-  -12.126018298226239,
-  "cafe",
-  new BABYLON.Color3(0.45, 0.28, 0.12),
-  -3
-);
-
-createBuildingBetweenCoords(
-  "niuWdBuilding",
-  -77.02886031373137,
-  -12.120414902995638,
-  -77.02888713582045,
-  -12.12101019132289,
-  11, // 50% menos altura
-  new BABYLON.Color3(0.05, 0.22, 0.8),
-  "Niu Digital World", -3.13
-);
 }
 function createSalesBoothAtLonLat(
   lon: number,
@@ -25643,7 +25689,7 @@ function subscribeRaceInvitesRealtime() {
           await beginRaceAsGuest(row);
         }
 
-        // --- Alguien llegó al rosa (ready_ids) ---
+                // --- Alguien llegó al rosa (ready_ids) ---
         if (
           row.status === "started" &&
           Array.isArray(row.ready_ids) &&
@@ -25652,13 +25698,12 @@ function subscribeRaceInvitesRealtime() {
           !countdownActive &&
           !raceStarted
         ) {
-          const needed = Math.max(2, multiplayerMaxPlayers > 0 ? Math.min(multiplayerMaxPlayers, multiplayerLobbyPlayers.filter((p) => p.accepted).length || 2) : 2);
-          // Más simple y seguro para 2 jugadores:
           const need = Math.max(
             2,
-            multiplayerLobbyPlayers.filter((p) => p.accepted).length
+            multiplayerLobbyPlayers.filter((p) => p.accepted).length || 2
           );
-          const readyCount = row.ready_ids.map(String).length;
+          const uniqueReady = [...new Set(row.ready_ids.map(String))];
+          const readyCount = uniqueReady.length;
 
           showMissionMessage(
             `En el punto rosa: ${readyCount} / ${need}. Esperando a todos...`,
