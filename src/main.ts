@@ -20495,10 +20495,12 @@ if (city === "maturin") {
 
   createMissionSystem();
 
-  spawnBotsForZone(currentZone);
+    spawnBotsForZone(currentZone);
+
   for (const friend of friends) {
-  createFriendAvatar(friend);
-}
+    createFriendAvatar(friend);
+  }
+  subscribeFriendsPresence();
 
   if (!isOnRoad(car.position) && roadSegments.length > 0) {
     const first = roadSegments[0];
@@ -25096,12 +25098,13 @@ async function acceptFriendRequestCloud(friendshipId: string) {
     return;
   }
 
-  await loadFriendsFromCloud();
+    await loadFriendsFromCloud();
 
   // Crear avatares de todos los amigos aceptados
   for (const f of friends) {
     createFriendAvatar(f);
   }
+  subscribeFriendsPresence();
 }
 
 
@@ -25141,12 +25144,95 @@ function saveFriendRequests() {
 }
 type FriendAvatar = {
   id: number;
+  cloudId?: string;
   name: string;
   root: BABYLON.TransformNode;
+  avatarRoot?: BABYLON.TransformNode;
+  carRoot?: BABYLON.TransformNode;
   label: BABYLON.Mesh;
 };
 
 const friendAvatars: FriendAvatar[] = [];
+
+// =========================
+// PRESENCIA EN VIVO (amigos)
+// =========================
+
+let lastPresenceSent = 0;
+
+async function publishMyPresence() {
+  const now = Date.now();
+  if (now - lastPresenceSent < 300) return;
+  lastPresenceSent = now;
+
+  try {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user || !player) return;
+
+    const ref = inCar && car ? car : player;
+
+    await supabase
+      .from("profiles")
+      .update({
+        pos_x: ref.position.x,
+        pos_z: ref.position.z,
+        rot_y: ref.rotation?.y ?? 0,
+        in_car: !!inCar,
+        map_name: currentMapName || "miraflores",
+        online_at: new Date().toISOString(),
+      })
+      .eq("id", user.id);
+  } catch (e) {
+    // silencioso
+  }
+}
+
+function subscribeFriendsPresence() {
+  const ids = friends
+    .map((f: any) => f.cloudId)
+    .filter(Boolean)
+    .map(String);
+
+  if (!ids.length) return;
+
+  supabase
+    .channel("friends-presence")
+    .on(
+      "postgres_changes",
+      {
+        event: "UPDATE",
+        schema: "public",
+        table: "profiles",
+      },
+      (payload) => {
+        const row = payload.new as any;
+        if (!row?.id) return;
+        if (!ids.includes(String(row.id))) return;
+
+        // Solo misma ciudad
+        if (row.map_name && row.map_name !== currentMapName) return;
+
+        const fa = friendAvatars.find(
+          (f) => String((f as any).cloudId) === String(row.id)
+        ) as FriendAvatar | undefined;
+
+        if (!fa?.root) return;
+
+        fa.root.position.x = Number(row.pos_x) || 0;
+        fa.root.position.z = Number(row.pos_z) || 0;
+        fa.root.rotation.y = Number(row.rot_y) || 0;
+
+        if (fa.avatarRoot && fa.carRoot) {
+          const driving = !!row.in_car;
+          fa.avatarRoot.setEnabled(!driving);
+          fa.carRoot.setEnabled(driving);
+        }
+      }
+    )
+    .subscribe();
+}
 const socialPanel = document.createElement("div");
 socialPanel.style.position = "fixed";
 socialPanel.style.right = "18px";
@@ -26224,6 +26310,7 @@ window.addEventListener("beforeunload", () => {
 });
 // Render
 engine.runRenderLoop(() => {
+  publishMyPresence();
   scene.render();
 });
 
