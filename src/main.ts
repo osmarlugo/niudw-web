@@ -25067,9 +25067,6 @@ async function rejectFriendRequestCloud(friendshipId: string) {
   }
   await loadFriendsFromCloud();
 }
-for (const f of friends) {
-  createFriendAvatar(f);
-}
 function saveFriends() {
   localStorage.setItem(
     "niuwd_friends",
