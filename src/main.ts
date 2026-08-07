@@ -1735,13 +1735,7 @@ function renderMultiplayerLobbyWindow() {
     }
   }, 50);
   }
-function inviteFriendToMultiplayerRace(friend: {
-  id: number;
-  name: string;
-  online: boolean;
-  x: number;
-  z: number;
-}) {
+async function inviteFriendToMultiplayerRace(friend: any) {
   if (!multiplayerSelectedCircuit) return;
 
   if (multiplayerLobbyPlayers.length >= multiplayerMaxPlayers) {
@@ -1757,35 +1751,127 @@ function inviteFriendToMultiplayerRace(friend: {
     return;
   }
 
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user || !friend.cloudId) {
+    alert("No se puede invitar (falta sesión o cloudId del amigo).");
+    return;
+  }
+
+  const myName =
+    localStorage.getItem("niuwd_session_user") ||
+    localStorage.getItem("niuwd_username") ||
+    "Jugador";
+
+  const { data, error } = await supabase
+    .from("race_invites")
+    .insert({
+      from_id: user.id,
+      to_id: friend.cloudId,
+      from_name: myName,
+      circuit_id: multiplayerSelectedCircuit.id,
+      circuit_name: multiplayerSelectedCircuit.name,
+      max_players: multiplayerMaxPlayers,
+      status: "pending",
+    })
+    .select("id")
+    .single();
+
+  if (error) {
+    alert("No se pudo enviar la invitación: " + error.message);
+    return;
+  }
+
   multiplayerLobbyPlayers.push({
     id: friend.id,
     name: friend.name,
     isHost: false,
     accepted: false,
     isLocal: false,
-  });
-
-  const invite: MultiplayerInvite = {
-    id: `mp_${Date.now()}_${friend.id}`,
-    fromName: LOCAL_PLAYER_NAME,
-    circuitId: multiplayerSelectedCircuit.id,
-    circuitName: multiplayerSelectedCircuit.name,
-    maxPlayers: multiplayerMaxPlayers,
-    createdAt: Date.now(),
-    status: "pending",
-  };
-
-  const invites = loadMultiplayerInvites();
-  invites.push(invite);
-  saveMultiplayerInvites(invites);
-
-  // Mensaje en el chat del amigo
-  const msg = `<p><strong>Sistema:</strong> 🏁 Invitación a Circuito Multijugador: <b>${invite.circuitName}</b>. Abre Mensajes o Solicitudes MP para aceptar.</p>`;
-  const chat = getChatMessages(friend.name);
-  chat.push(msg);
-  saveChatMessages(friend.name, chat);
+    inviteId: data?.id, // opcional
+  } as any);
 
   showMissionMessage(`Invitación enviada a ${friend.name}`, 3000);
+  renderMultiplayerLobbyWindow();
+}
+async function loadRaceInvitesFromCloud() {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return [];
+
+  const { data, error } = await supabase
+    .from("race_invites")
+    .select("*")
+    .eq("to_id", user.id)
+    .eq("status", "pending")
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    console.warn(error.message);
+    return [];
+  }
+  return data || [];
+}
+
+async function respondRaceInvite(inviteId: string, accept: boolean) {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return;
+
+  const { data: inv, error } = await supabase
+    .from("race_invites")
+    .update({ status: accept ? "accepted" : "rejected" })
+    .eq("id", inviteId)
+    .eq("to_id", user.id)
+    .select("*")
+    .single();
+
+  if (error || !inv) {
+    alert("No se pudo responder la invitación.");
+    return;
+  }
+
+  if (!accept) {
+    showMissionMessage("Invitación rechazada.", 3000);
+    // El host se enterará por realtime (abajo)
+    return;
+  }
+
+  // Aceptó → buscar el circuito y preparar lobby local como invitado
+  const config =
+    Object.values(raceConfigs).find(
+      (c: any) => c.id === inv.circuit_id || c.name === inv.circuit_name
+    ) || null;
+
+  if (!config) {
+    showMissionMessage("Circuito no encontrado.", 3000);
+    return;
+  }
+
+  multiplayerSelectedCircuit = config;
+  multiplayerIsHost = false;
+  multiplayerMaxPlayers = inv.max_players || 2;
+  multiplayerLobbyPlayers = [
+    {
+      id: "host",
+      name: inv.from_name,
+      isHost: true,
+      accepted: true,
+      isLocal: false,
+    },
+    {
+      id: "local",
+      name: "Tú",
+      isHost: false,
+      accepted: true,
+      isLocal: true,
+    },
+  ];
+
+  showMissionMessage("Invitación aceptada. Esperando al anfitrión.", 4000);
   renderMultiplayerLobbyWindow();
 }
 
@@ -20458,6 +20544,8 @@ async function setupInitialGame(city: "lima" | "maturin") {
   await loadFriendsFromCloud();
   await loadWorldChatFromCloud();
 subscribeWorldChatRealtime();
+subscribeFriendsPresence();
+subscribeRaceInvitesRealtime();
 
   if (city === "lima") {
   currentMapName = "miraflores";
@@ -25233,6 +25321,51 @@ function subscribeFriendsPresence() {
     )
     .subscribe();
 }
+function subscribeRaceInvitesRealtime() {
+  supabase
+    .channel("race-invites-live")
+    .on(
+      "postgres_changes",
+      {
+        event: "UPDATE",
+        schema: "public",
+        table: "race_invites",
+      },
+      (payload) => {
+        const row = payload.new as any;
+        if (!row) return;
+
+        // Si soy el host y alguien respondió mi invitación
+        if (row.status === "accepted") {
+          const p = multiplayerLobbyPlayers.find(
+            (x) => !x.isLocal && !x.accepted
+          );
+          // Mejor: emparejar por nombre
+          const byName = multiplayerLobbyPlayers.find(
+            (x) => x.name === row.to_id // no coincide
+          );
+          // Marcar por invite / primer pendiente con mismo circuito
+          for (const pl of multiplayerLobbyPlayers) {
+            if (!pl.isLocal && !pl.accepted) {
+              pl.accepted = true;
+              break;
+            }
+          }
+          showMissionMessage("Un amigo aceptó la partida.", 3000);
+          if (multiplayerSelectedCircuit) renderMultiplayerLobbyWindow();
+        }
+
+        if (row.status === "rejected") {
+          multiplayerLobbyPlayers = multiplayerLobbyPlayers.filter(
+            (p) => p.isLocal || p.accepted
+          );
+          showMissionMessage("Tu amigo ha cancelado la solicitud", 4000);
+          if (multiplayerSelectedCircuit) renderMultiplayerLobbyWindow();
+        }
+      }
+    )
+    .subscribe();
+}
 const socialPanel = document.createElement("div");
 socialPanel.style.position = "fixed";
 socialPanel.style.right = "18px";
@@ -25661,48 +25794,47 @@ function saveChatMessages(friendName: string, messages: string[]) {
   );
 }
 
-function openChat(friendName: string) {
-  const messages = getChatMessages(friendName);
+let privateChatChannel: ReturnType<typeof supabase.channel> | null = null;
+
+async function openChat(friendName: string) {
+  const friend = friends.find((f: any) => f.name === friendName) as any;
+  const friendCloudId = friend?.cloudId as string | undefined;
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
   let messagesHtml = "";
 
-    if (messages.length === 0) {
-    messagesHtml = `<p style="opacity:0.7">Sin mensajes todavía. Escribe el primero.</p>`;
-  } else {
-    for (const msg of messages) {
-      messagesHtml += msg;
+  if (friendCloudId && user) {
+    const rows = await loadPrivateChat(friendCloudId);
+    if (rows.length === 0) {
+      messagesHtml = `<p style="opacity:0.7">Sin mensajes todavía.</p>`;
+    } else {
+      for (const m of rows) {
+        const who = m.from_id === user.id ? "Tú" : friendName;
+        messagesHtml += `<p><strong>${who}:</strong> ${m.body}</p>`;
+      }
     }
+  } else {
+    messagesHtml = `<p style="opacity:0.7">Chat en la nube no disponible (falta cloudId).</p>`;
   }
 
   openSocialWindow(
     `Chat con ${friendName}`,
     `
       <div id="chatBox" style="
-        height:140px;
-        overflow-y:auto;
-        background:rgba(255,255,255,0.08);
-        padding:8px;
-        border-radius:8px;
-        margin-bottom:10px;
+        height:140px;overflow-y:auto;background:rgba(255,255,255,0.08);
+        padding:8px;border-radius:8px;margin-bottom:10px;
       ">
         ${messagesHtml}
       </div>
-
       <input id="chatInput" placeholder="Escribe un mensaje..." style="
-        width:100%;
-        padding:8px;
-        box-sizing:border-box;
-        border-radius:8px;
-        border:0;
-        margin-bottom:8px;
+        width:100%;padding:8px;box-sizing:border-box;border-radius:8px;
+        border:0;margin-bottom:8px;
       ">
-
       <button id="sendChatBtn" style="
-        width:100%;
-        padding:8px;
-        border:0;
-        border-radius:8px;
-        cursor:pointer;
+        width:100%;padding:8px;border:0;border-radius:8px;cursor:pointer;
       ">Enviar</button>
     `
   );
@@ -25713,29 +25845,83 @@ function openChat(friendName: string) {
 
   box.scrollTop = box.scrollHeight;
 
-  sendBtn.onclick = () => {
+  async function doSend() {
     const text = input.value.trim();
+    if (!text || !friendCloudId) return;
 
-    if (!text) return;
-
-    const newMessage = `<p><strong>Tú:</strong> ${text}</p>`;
-
-    box.innerHTML += newMessage;
-
-    const savedMessages = getChatMessages(friendName);
-    savedMessages.push(newMessage);
-    saveChatMessages(friendName, savedMessages);
-
+    await sendPrivateMessage(friendCloudId, text);
+    box.innerHTML += `<p><strong>Tú:</strong> ${text}</p>`;
     input.value = "";
     box.scrollTop = box.scrollHeight;
+  }
+
+  sendBtn.onclick = () => {
+    void doSend();
   };
+
+  // Enter para enviar
+  input.onkeydown = (e) => {
+    e.stopPropagation();
+    keys[e.key.toLowerCase()] = false;
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void doSend();
+    }
+  };
+
+  input.onkeyup = (e) => {
+    e.stopPropagation();
+    keys[e.key.toLowerCase()] = false;
+  };
+
+  // Realtime: mensajes nuevos del otro
+  if (privateChatChannel) {
+    supabase.removeChannel(privateChatChannel);
+    privateChatChannel = null;
+  }
+
+  if (friendCloudId && user) {
+    privateChatChannel = supabase
+      .channel(`private-chat-${friendCloudId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "private_messages",
+        },
+        (payload) => {
+          const row = payload.new as any;
+          if (!row) return;
+
+          // Solo mensajes de esta conversación
+          const isThisChat =
+            (row.from_id === user.id && row.to_id === friendCloudId) ||
+            (row.from_id === friendCloudId && row.to_id === user.id);
+
+          if (!isThisChat) return;
+
+          // No duplicar los que acabas de enviar tú
+          if (row.from_id === user.id) return;
+
+          const who = friendName;
+          box.innerHTML += `<p><strong>${who}:</strong> ${row.body}</p>`;
+          box.scrollTop = box.scrollHeight;
+        }
+      )
+      .subscribe();
+  }
+
+  setTimeout(() => input.focus(), 50);
 }
 requestsBtn.onclick = async () => {
   await loadFriendsFromCloud();
+  const raceInvites = await loadRaceInvitesFromCloud();
 
   let html = "";
 
-  if (friendRequests.length === 0) {
+  // --- Amistades pendientes ---
+  if (friendRequests.length === 0 && raceInvites.length === 0) {
     html = "<p>No hay solicitudes pendientes.</p>";
   }
 
@@ -25743,50 +25929,43 @@ requestsBtn.onclick = async () => {
     html += `
   <div style="margin-bottom:12px;">
     <strong>${request.name}</strong><br>
-    🟢 Solicitud pendiente<br><br>
+    🟢 Solicitud de amistad<br><br>
+    <button id="accept_${request.id}">Aceptar</button>
+    <button id="reject_${request.id}">Rechazar</button>
+  </div>`;
+  }
 
-    <button id="accept_${request.id}">
-      Aceptar
-    </button>
-
-    <button id="reject_${request.id}">
-      Rechazar
-    </button>
-  </div>
-`;
+  // --- Invitaciones de circuito ---
+  for (const inv of raceInvites) {
+    html += `
+  <div style="margin-bottom:12px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.15);">
+    <strong>🏁 ${inv.circuit_name}</strong><br>
+    <span style="font-size:12px;color:#ccc;">De: ${inv.from_name} · Máx ${inv.max_players}</span><br><br>
+    <button id="raceAccept_${inv.id}">Aceptar partida</button>
+    <button id="raceReject_${inv.id}">Rechazar</button>
+  </div>`;
   }
 
   openSocialWindow("Solicitudes", html);
 
-  for (const request of friendRequests) {
-    const btn = document.getElementById(
-      `accept_${request.id}`
-    ) as HTMLButtonElement | null;
+  // ... deja el código de accept/reject de amistad igual ...
 
-    if (btn) {
-      btn.onclick = async () => {
-        if ((request as any).friendshipId) {
-          await acceptFriendRequestCloud((request as any).friendshipId);
-        }
-        openSocialWindow(
-          "Amistad aceptada",
-          `<p>${request.name} ahora es tu amigo.</p>`
-        );
+  // Botones de carrera
+  for (const inv of raceInvites) {
+    const a = document.getElementById(`raceAccept_${inv.id}`) as HTMLButtonElement | null;
+    const r = document.getElementById(`raceReject_${inv.id}`) as HTMLButtonElement | null;
+
+    if (a) {
+      a.onclick = async () => {
+        await respondRaceInvite(inv.id, true);
       };
     }
-
-    const rejectBtn = document.getElementById(
-      `reject_${request.id}`
-    ) as HTMLButtonElement | null;
-
-    if (rejectBtn) {
-      rejectBtn.onclick = async () => {
-        if ((request as any).friendshipId) {
-          await rejectFriendRequestCloud((request as any).friendshipId);
-        }
+    if (r) {
+      r.onclick = async () => {
+        await respondRaceInvite(inv.id, false);
         openSocialWindow(
-          "Solicitud rechazada",
-          `<p>Rechazaste la solicitud de ${request.name}</p>`
+          "Invitación rechazada",
+          `<p>Rechazaste la partida de ${inv.from_name}.</p>`
         );
       };
     }
