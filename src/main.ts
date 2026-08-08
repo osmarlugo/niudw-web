@@ -2194,7 +2194,7 @@ async function markMyselfReadyAtStart() {
   if (!user) return;
 
   const needed = Math.max(2, multiplayerExpectedCount || 2);
-    console.log(
+  console.log(
     "[MP] ready check, needed =",
     needed,
     "expected =",
@@ -2208,75 +2208,38 @@ async function markMyselfReadyAtStart() {
 
   mpLocalReadySent = true;
 
-  // Todas las invites started de esta sesión (yo soy from o to)
-  const { data: rows, error } = await supabase
-    .from("race_invites")
-    .select("id, ready_ids, from_id, to_id, circuit_id")
-    .eq("status", "started")
-    .or(`from_id.eq.${user.id},to_id.eq.${user.id}`);
+  // Llama a la función SQL (une listos de toda la partida)
+  const { data, error } = await supabase.rpc("mark_race_ready");
 
   if (error) {
-    console.warn("ready_ids:", error.message);
+    console.warn("mark_race_ready:", error.message);
+    showMissionMessage("Error al marcar listo: " + error.message, 4000);
     mpLocalReadySent = false;
     return;
   }
 
-  if (!rows || rows.length === 0) {
-    showMissionMessage("En el rosa. Esperando a los demás...", 3000);
-    clearMpReadyRetry();
-    mpReadyRetryTimer = setTimeout(() => {
-      if (!multiplayerRaceActive || countdownActive || raceStarted) return;
-      mpLocalReadySent = false;
-      void markMyselfReadyAtStart();
-    }, 1500);
+  const result = data as {
+    ok?: boolean;
+    ready_count?: number;
+    needed?: number;
+    error?: string;
+  };
+
+  if (!result?.ok) {
+    showMissionMessage("Aún no hay sesión de carrera activa.", 3000);
+    mpLocalReadySent = false;
     return;
   }
 
-  // Sesión = mismo host + mismo circuito
-  const hostId = String(rows[0].from_id);
-  const circuitId = String(rows[0].circuit_id);
-
-  const { data: sessionRows } = await supabase
-    .from("race_invites")
-    .select("id, ready_ids, from_id, to_id")
-    .eq("status", "started")
-    .eq("from_id", hostId)
-    .eq("circuit_id", circuitId);
-
-  const session = sessionRows || rows;
-
-  // Unir ready_ids de todas las filas + yo
-  let union: string[] = [];
-  for (const row of session) {
-    const part = Array.isArray(row.ready_ids)
-      ? row.ready_ids.map(String)
-      : [];
-    union.push(...part);
-  }
-  union.push(String(user.id));
-  union = [...new Set(union)];
-
-  // Escribir el mismo union en TODAS las filas de la sesión
-  for (const row of session) {
-    const { error: upErr } = await supabase
-      .from("race_invites")
-      .update({ ready_ids: union })
-      .eq("id", row.id);
-
-    if (upErr) {
-      console.warn("update ready_ids:", upErr.message);
-      mpLocalReadySent = false;
-      showMissionMessage("No se pudo registrar listo en el rosa.", 3000);
-      return;
-    }
-  }
+  const readyCount = Number(result.ready_count || 0);
+  const need = Math.max(needed, Number(result.needed || needed));
 
   showMissionMessage(
-    `En el punto rosa: ${union.length} / ${needed}. Esperando a todos...`,
+    `En el punto rosa: ${readyCount} / ${need}. Esperando a todos...`,
     4000
   );
 
-  if (union.length >= needed) {
+  if (readyCount >= need) {
     startRaceCountdown();
     return;
   }
@@ -2284,7 +2247,7 @@ async function markMyselfReadyAtStart() {
   clearMpReadyRetry();
   mpReadyRetryTimer = setTimeout(() => {
     if (!multiplayerRaceActive || countdownActive || raceStarted) return;
-    void checkReadyAndMaybeStart(String(user.id), needed);
+    void checkReadyAndMaybeStart(String(user.id), need);
   }, 2000);
 }
 
@@ -2293,38 +2256,21 @@ async function checkReadyAndMaybeStart(myId: string, needed: number) {
 
   const need = Math.max(2, needed || multiplayerExpectedCount || 2);
 
-  const { data: rows } = await supabase
-    .from("race_invites")
-    .select("id, ready_ids, from_id, circuit_id")
-    .eq("status", "started")
-    .or(`from_id.eq.${myId},to_id.eq.${myId}`);
+  const { data, error } = await supabase.rpc("mark_race_ready");
+  if (error || !data) return;
 
-  if (!rows || rows.length === 0) return;
+  const result = data as { ok?: boolean; ready_count?: number; needed?: number };
+  if (!result.ok) return;
 
-  const hostId = String(rows[0].from_id);
-  const circuitId = String(rows[0].circuit_id);
-
-  const { data: sessionRows } = await supabase
-    .from("race_invites")
-    .select("ready_ids")
-    .eq("status", "started")
-    .eq("from_id", hostId)
-    .eq("circuit_id", circuitId);
-
-  let union: string[] = [];
-  for (const row of sessionRows || rows) {
-    if (Array.isArray(row.ready_ids)) {
-      union.push(...row.ready_ids.map(String));
-    }
-  }
-  union = [...new Set(union)];
+  const readyCount = Number(result.ready_count || 0);
+  const finalNeed = Math.max(need, Number(result.needed || need));
 
   showMissionMessage(
-    `En el punto rosa: ${union.length} / ${need}. Esperando a todos...`,
+    `En el punto rosa: ${readyCount} / ${finalNeed}. Esperando a todos...`,
     2500
   );
 
-  if (union.length >= need) {
+  if (readyCount >= finalNeed) {
     startRaceCountdown();
   }
 }
