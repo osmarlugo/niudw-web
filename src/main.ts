@@ -1918,28 +1918,12 @@ async function beginRaceAsGuest(row: any) {
 
   console.log("Invitado entra al circuito:", config.id, config.name);
 
-    multiplayerSelectedCircuit = config;
+      multiplayerSelectedCircuit = config;
   multiplayerIsHost = false;
   multiplayerMaxPlayers = row.max_players || 2;
+  multiplayerExpectedCount = Math.max(2, Number(row.max_players) || 2);
 
-  // Contar participantes de esta partida (host + invitados)
-  try {
-    const { data: sessionRows } = await supabase
-      .from("race_invites")
-      .select("from_id, to_id")
-      .eq("status", "started")
-      .eq("from_id", row.from_id)
-      .eq("circuit_id", row.circuit_id);
-
-    const ids = new Set<string>();
-    for (const r of sessionRows || []) {
-      ids.add(String(r.from_id));
-      ids.add(String(r.to_id));
-    }
-    multiplayerExpectedCount = Math.max(2, ids.size);
-  } catch {
-    multiplayerExpectedCount = Math.max(2, row.max_players || 2);
-  }
+  console.log("Esperados en el rosa:", multiplayerExpectedCount);
 
   multiplayerLobbyPlayers = [
     {
@@ -2162,18 +2146,22 @@ async function tryStartMultiplayerRace() {
     mpLocalReadySent = false;
   multiplayerRaceActive = false;
 
-  const circuitId = multiplayerSelectedCircuit.id;
+    const circuitId = multiplayerSelectedCircuit.id;
+
+  const expected = Math.max(2, accepted.length);
+  multiplayerExpectedCount = expected;
 
   const { data: updated, error } = await supabase
     .from("race_invites")
     .update({
       status: "started",
       ready_ids: [],
+      max_players: expected,
     })
     .eq("from_id", user.id)
-    .eq("circuit_id", circuitId) // ← solo este circuito
+    .eq("circuit_id", circuitId)
     .in("status", ["pending", "accepted"])
-    .select("id, to_id, circuit_id, status");
+    .select("id, to_id, circuit_id, status, max_players");
 
   if (error) {
     console.error("Error al iniciar partida:", error.message);
@@ -2181,11 +2169,17 @@ async function tryStartMultiplayerRace() {
     return;
   }
 
-  console.log("Invitaciones started:", updated, "circuito:", circuitId);
+  console.log(
+    "Invitaciones started:",
+    updated,
+    "circuito:",
+    circuitId,
+    "esperados:",
+    expected
+  );
 
   socialWindow.style.display = "none";
-  
-multiplayerExpectedCount = Math.max(2, accepted.length);
+
   await startMultiplayerRace(multiplayerSelectedCircuit, accepted, true);
 }
 let mpLocalReadySent = false;
@@ -2200,6 +2194,12 @@ async function markMyselfReadyAtStart() {
   if (!user) return;
 
   const needed = Math.max(2, multiplayerExpectedCount || 2);
+    console.log(
+    "[MP] ready check, needed =",
+    needed,
+    "expected =",
+    multiplayerExpectedCount
+  );
 
   if (mpLocalReadySent) {
     await checkReadyAndMaybeStart(String(user.id), needed);
@@ -24282,7 +24282,7 @@ function updateRaceCircuit() {
   if (!car) return;
   if (!raceMissionActive) return;
 
-    if (raceGoingToStart && raceStartLine && !countdownActive) {
+      if (raceGoingToStart && raceStartLine && !countdownActive) {
     const distStart = BABYLON.Vector3.Distance(
       car.position,
       raceStartLine.position
@@ -24290,10 +24290,10 @@ function updateRaceCircuit() {
 
     if (distStart < 8) {
       if (multiplayerRaceActive) {
-        // Multijugador: marcarme como listo, NO iniciar solo
-        void markMyselfReadyAtStart();
+        if (!mpLocalReadySent && !countdownActive && !raceStarted) {
+          void markMyselfReadyAtStart();
+        }
       } else {
-        // Circuito normal (1 jugador + bots)
         startRaceCountdown();
       }
     }
