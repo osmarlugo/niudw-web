@@ -1459,6 +1459,7 @@ type MultiplayerInvite = {
 let multiplayerRaceActive = false;
 let multiplayerIsHost = false;
 let multiplayerMaxPlayers = 2;
+let multiplayerExpectedCount = 2; // cuántos deben tocar el rosa
 let multiplayerSelectedCircuit: RaceConfig | null = null;
 let multiplayerLobbyPlayers: MultiplayerLobbyPlayer[] = [];
 let multiplayerPendingInvites: MultiplayerInvite[] = [];
@@ -1917,9 +1918,29 @@ async function beginRaceAsGuest(row: any) {
 
   console.log("Invitado entra al circuito:", config.id, config.name);
 
-  multiplayerSelectedCircuit = config;
+    multiplayerSelectedCircuit = config;
   multiplayerIsHost = false;
   multiplayerMaxPlayers = row.max_players || 2;
+
+  // Contar participantes de esta partida (host + invitados)
+  try {
+    const { data: sessionRows } = await supabase
+      .from("race_invites")
+      .select("from_id, to_id")
+      .eq("status", "started")
+      .eq("from_id", row.from_id)
+      .eq("circuit_id", row.circuit_id);
+
+    const ids = new Set<string>();
+    for (const r of sessionRows || []) {
+      ids.add(String(r.from_id));
+      ids.add(String(r.to_id));
+    }
+    multiplayerExpectedCount = Math.max(2, ids.size);
+  } catch {
+    multiplayerExpectedCount = Math.max(2, row.max_players || 2);
+  }
+
   multiplayerLobbyPlayers = [
     {
       id: "host",
@@ -2163,7 +2184,8 @@ async function tryStartMultiplayerRace() {
   console.log("Invitaciones started:", updated, "circuito:", circuitId);
 
   socialWindow.style.display = "none";
-
+  
+multiplayerExpectedCount = Math.max(2, accepted.length);
   await startMultiplayerRace(multiplayerSelectedCircuit, accepted, true);
 }
 let mpLocalReadySent = false;
@@ -2177,118 +2199,133 @@ async function markMyselfReadyAtStart() {
   } = await supabase.auth.getUser();
   if (!user) return;
 
-  const needed = Math.max(
-    2,
-    multiplayerLobbyPlayers.filter((p) => p.accepted).length || 2
-  );
+  const needed = Math.max(2, multiplayerExpectedCount || 2);
 
   if (mpLocalReadySent) {
-    // Releer por si el otro ya llegó
-    await checkReadyAndMaybeStart(user.id, needed);
+    await checkReadyAndMaybeStart(String(user.id), needed);
     return;
   }
 
   mpLocalReadySent = true;
 
+  // Todas las invites started de esta sesión (yo soy from o to)
   const { data: rows, error } = await supabase
     .from("race_invites")
-    .select("id, ready_ids, from_id, to_id")
+    .select("id, ready_ids, from_id, to_id, circuit_id")
     .eq("status", "started")
     .or(`from_id.eq.${user.id},to_id.eq.${user.id}`);
 
   if (error) {
     console.warn("ready_ids:", error.message);
-    showMissionMessage("Error al marcar listo. Revisa la conexión.", 3000);
     mpLocalReadySent = false;
     return;
   }
 
   if (!rows || rows.length === 0) {
-    showMissionMessage(
-      "Estás en el punto rosa. Esperando al otro jugador...",
-      4000
-    );
-    // Reintentar en 1.5s por si el status aún no está en started
-    setTimeout(() => {
+    showMissionMessage("En el rosa. Esperando a los demás...", 3000);
+    clearMpReadyRetry();
+    mpReadyRetryTimer = setTimeout(() => {
+      if (!multiplayerRaceActive || countdownActive || raceStarted) return;
       mpLocalReadySent = false;
       void markMyselfReadyAtStart();
     }, 1500);
     return;
   }
 
-  for (const row of rows) {
-    // Leer de nuevo justo antes de escribir (evita pisar al otro)
-    const { data: fresh } = await supabase
-      .from("race_invites")
-      .select("ready_ids")
-      .eq("id", row.id)
-      .single();
+  // Sesión = mismo host + mismo circuito
+  const hostId = String(rows[0].from_id);
+  const circuitId = String(rows[0].circuit_id);
 
-    const ready: string[] = Array.isArray(fresh?.ready_ids)
-      ? fresh.ready_ids.map(String)
-      : Array.isArray(row.ready_ids)
-        ? row.ready_ids.map(String)
-        : [];
+  const { data: sessionRows } = await supabase
+    .from("race_invites")
+    .select("id, ready_ids, from_id, to_id")
+    .eq("status", "started")
+    .eq("from_id", hostId)
+    .eq("circuit_id", circuitId);
 
-    if (!ready.includes(String(user.id))) {
-      ready.push(String(user.id));
-    }
+  const session = sessionRows || rows;
 
+  // Unir ready_ids de todas las filas + yo
+  let union: string[] = [];
+  for (const row of session) {
+    const part = Array.isArray(row.ready_ids)
+      ? row.ready_ids.map(String)
+      : [];
+    union.push(...part);
+  }
+  union.push(String(user.id));
+  union = [...new Set(union)];
+
+  // Escribir el mismo union en TODAS las filas de la sesión
+  for (const row of session) {
     const { error: upErr } = await supabase
       .from("race_invites")
-      .update({ ready_ids: ready })
+      .update({ ready_ids: union })
       .eq("id", row.id);
 
     if (upErr) {
       console.warn("update ready_ids:", upErr.message);
-      showMissionMessage("No se pudo registrar que llegaste al rosa.", 3000);
       mpLocalReadySent = false;
-      return;
-    }
-
-    const uniqueReady = [...new Set(ready.map(String))];
-    showMissionMessage(
-      `En el punto rosa: ${uniqueReady.length} / ${needed}. Esperando a todos...`,
-      4000
-    );
-
-    if (uniqueReady.length >= needed) {
-      startRaceCountdown();
+      showMissionMessage("No se pudo registrar listo en el rosa.", 3000);
       return;
     }
   }
 
-  // Si aún falta alguien, revisar otra vez en 2s (por si realtime falla)
-  setTimeout(() => {
-    void checkReadyAndMaybeStart(user.id, needed);
+  showMissionMessage(
+    `En el punto rosa: ${union.length} / ${needed}. Esperando a todos...`,
+    4000
+  );
+
+  if (union.length >= needed) {
+    startRaceCountdown();
+    return;
+  }
+
+  clearMpReadyRetry();
+  mpReadyRetryTimer = setTimeout(() => {
+    if (!multiplayerRaceActive || countdownActive || raceStarted) return;
+    void checkReadyAndMaybeStart(String(user.id), needed);
   }, 2000);
 }
 
 async function checkReadyAndMaybeStart(myId: string, needed: number) {
   if (!multiplayerRaceActive || countdownActive || raceStarted) return;
 
+  const need = Math.max(2, needed || multiplayerExpectedCount || 2);
+
   const { data: rows } = await supabase
     .from("race_invites")
-    .select("id, ready_ids")
+    .select("id, ready_ids, from_id, circuit_id")
     .eq("status", "started")
     .or(`from_id.eq.${myId},to_id.eq.${myId}`);
 
   if (!rows || rows.length === 0) return;
 
-  for (const row of rows) {
-    const ready = Array.isArray(row.ready_ids)
-      ? [...new Set(row.ready_ids.map(String))]
-      : [];
+  const hostId = String(rows[0].from_id);
+  const circuitId = String(rows[0].circuit_id);
 
-    showMissionMessage(
-      `En el punto rosa: ${ready.length} / ${needed}. Esperando a todos...`,
-      2500
-    );
+  const { data: sessionRows } = await supabase
+    .from("race_invites")
+    .select("ready_ids")
+    .eq("status", "started")
+    .eq("from_id", hostId)
+    .eq("circuit_id", circuitId);
 
-    if (ready.length >= needed) {
-      startRaceCountdown();
-      return;
+  let union: string[] = [];
+  for (const row of sessionRows || rows) {
+    if (Array.isArray(row.ready_ids)) {
+      union.push(...row.ready_ids.map(String));
     }
+  }
+  union = [...new Set(union)];
+
+  showMissionMessage(
+    `En el punto rosa: ${union.length} / ${need}. Esperando a todos...`,
+    2500
+  );
+
+  if (union.length >= need) {
+    startRaceCountdown();
   }
 }
 async function startMultiplayerRace(
@@ -2321,6 +2358,10 @@ async function startMultiplayerRace(
   multiplayerIsHost = asHost;
   multiplayerSelectedCircuit = config;
   multiplayerLobbyPlayers = players;
+    multiplayerExpectedCount = Math.max(
+    2,
+    players.filter((p) => p.accepted).length || multiplayerMaxPlayers || 2
+  );
 
   activeRaceConfig = config;
   raceMissionActive = true;
@@ -22609,7 +22650,12 @@ function safeChatText(text: string) {
 function renderWorldChat() {
   const messages = getWorldChatMessages();
 
-  worldChatMessagesDiv.innerHTML = messages
+  const el = worldChatMessagesDiv;
+  const distanceFromBottom =
+    el.scrollHeight - el.scrollTop - el.clientHeight;
+  const wasNearBottom = distanceFromBottom < 48;
+
+  el.innerHTML = messages
     .map(
       (msg) =>
         `<div style="margin-bottom:6px;">
@@ -22619,7 +22665,10 @@ function renderWorldChat() {
     )
     .join("");
 
-  worldChatMessagesDiv.scrollTop = worldChatMessagesDiv.scrollHeight;
+  // Solo bajar si el usuario ya estaba abajo (mensaje nuevo)
+  if (wasNearBottom) {
+    el.scrollTop = el.scrollHeight;
+  }
 }
 
 async function sendWorldChatMessage() {
@@ -25736,7 +25785,7 @@ function subscribeRaceInvitesRealtime() {
         }
 
                 // --- Alguien llegó al rosa (ready_ids) ---
-        if (
+                if (
           row.status === "started" &&
           Array.isArray(row.ready_ids) &&
           multiplayerRaceActive &&
@@ -25744,10 +25793,7 @@ function subscribeRaceInvitesRealtime() {
           !countdownActive &&
           !raceStarted
         ) {
-          const need = Math.max(
-            2,
-            multiplayerLobbyPlayers.filter((p) => p.accepted).length || 2
-          );
+          const need = Math.max(2, multiplayerExpectedCount || 2);
           const uniqueReady = [...new Set(row.ready_ids.map(String))];
           const readyCount = uniqueReady.length;
 
