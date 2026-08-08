@@ -1460,6 +1460,7 @@ let multiplayerRaceActive = false;
 let multiplayerIsHost = false;
 let multiplayerMaxPlayers = 2;
 let multiplayerExpectedCount = 2; // cuántos deben tocar el rosa
+let mpWaitingInviteId: string | null = null;
 let multiplayerSelectedCircuit: RaceConfig | null = null;
 let multiplayerLobbyPlayers: MultiplayerLobbyPlayer[] = [];
 let multiplayerPendingInvites: MultiplayerInvite[] = [];
@@ -1862,25 +1863,28 @@ function startWaitingForRaceStart() {
     } = await supabase.auth.getUser();
     if (!user) return;
 
-    const { data: rows, error } = await supabase
+    // Solo la invitación que acepté (no partidas viejas)
+    if (!mpWaitingInviteId) return;
+
+    const { data: row, error } = await supabase
       .from("race_invites")
       .select("*")
+      .eq("id", mpWaitingInviteId)
       .eq("to_id", user.id)
       .eq("status", "started")
-      .order("created_at", { ascending: false })
-      .limit(1);
+      .maybeSingle();
 
     if (error) {
       console.warn("poll race start:", error.message);
       return;
     }
 
-    if (!rows || rows.length === 0) return;
+    if (!row) return; // el host aún no pulsó Iniciar
 
-    const row = rows[0];
     stopWaitingForRaceStart();
+    mpWaitingInviteId = null;
     await beginRaceAsGuest(row);
-  }, 2000); // cada 2 segundos
+  }, 2000);
 }
 
 async function beginRaceAsGuest(row: any) {
@@ -1986,7 +1990,7 @@ async function respondRaceInvite(inviteId: string, accept: boolean) {
     return;
   }
 
-  // Aceptó → buscar el circuito y preparar lobby local como invitado
+    // Aceptó → guardar id y ESPERAR al host (NO iniciar carrera aquí)
   const config =
     Object.values(raceConfigs).find(
       (c: any) => c.id === inv.circuit_id || c.name === inv.circuit_name
@@ -1997,9 +2001,17 @@ async function respondRaceInvite(inviteId: string, accept: boolean) {
     return;
   }
 
-    multiplayerSelectedCircuit = config;
+  multiplayerSelectedCircuit = config;
   multiplayerIsHost = false;
   multiplayerMaxPlayers = inv.max_players || 2;
+  multiplayerRaceActive = false;
+  mpLocalReadySent = false;
+  raceMissionActive = false;
+  raceGoingToStart = false;
+
+  // Solo esta invitación podrá activar el circuito
+  mpWaitingInviteId = String(inv.id);
+
   multiplayerLobbyPlayers = [
     {
       id: "host",
@@ -2016,10 +2028,6 @@ async function respondRaceInvite(inviteId: string, accept: boolean) {
       isLocal: true,
     },
   ];
-      multiplayerRaceActive = false;
-  mpLocalReadySent = false;
-  startWaitingForRaceStart();
-    showMissionMessage("Invitación aceptada. Esperando al anfitrión.", 4000);
 
   openSocialWindow(
     "Esperando partida",
@@ -2036,7 +2044,7 @@ async function respondRaceInvite(inviteId: string, accept: boolean) {
     `
   );
 
-  // NUEVO: revisar cada 2s si el host ya inició
+  showMissionMessage("Invitación aceptada. Esperando al anfitrión.", 4000);
   startWaitingForRaceStart();
 }
 
@@ -2147,7 +2155,6 @@ async function tryStartMultiplayerRace() {
   multiplayerRaceActive = false;
 
     const circuitId = multiplayerSelectedCircuit.id;
-
   const expected = Math.max(2, accepted.length);
   multiplayerExpectedCount = expected;
 
@@ -2160,7 +2167,7 @@ async function tryStartMultiplayerRace() {
     })
     .eq("from_id", user.id)
     .eq("circuit_id", circuitId)
-    .in("status", ["pending", "accepted"])
+    .eq("status", "accepted") // solo las aceptadas, no pending viejas
     .select("id, to_id, circuit_id, status, max_players");
 
   if (error) {
@@ -25720,16 +25727,20 @@ function subscribeRaceInvitesRealtime() {
           }
         }
 
-                // --- Host inició: INVITADO crea el aro rosa ---
+                        // Host inició → invitado crea el aro rosa
         if (
           row.status === "started" &&
           String(row.to_id) === String(user.id) &&
           !multiplayerRaceActive
         ) {
+          // Si estamos esperando una invitación concreta, debe coincidir
+          if (mpWaitingInviteId && String(row.id) !== String(mpWaitingInviteId)) {
+            return;
+          }
           stopWaitingForRaceStart();
+          mpWaitingInviteId = null;
           await beginRaceAsGuest(row);
         }
-
                 // --- Alguien llegó al rosa (ready_ids) ---
                 if (
           row.status === "started" &&
