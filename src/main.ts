@@ -25501,21 +25501,6 @@ async function loadFriendsFromCloud() {
     };
   });
 
-  friends = accepted.map((r, index) => {
-    const otherId =
-      r.requester_id === user.id ? r.addressee_id : r.requester_id;
-    const key = String(otherId);
-    return {
-      id: index + 1,
-      cloudId: key,
-      friendshipId: r.id,
-      name: profilesMap[key] || "Usuario",
-      online: false,
-      x: 0,
-      z: 0,
-    };
-  });
-
   friendRequests = pendingToMe.map((r, index) => {
     const otherId = r.requester_id;
     const key = String(otherId);
