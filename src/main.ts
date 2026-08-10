@@ -25504,11 +25504,12 @@ async function loadFriendsFromCloud() {
   friendRequests = pendingToMe.map((r, index) => {
     const otherId = r.requester_id;
     const key = String(otherId);
+    const prof = profilesMap[key];
     return {
       id: index + 1,
       cloudId: key,
-      friendshipId: String(r.id), // id real de la fila
-      name: profilesMap[key] || "Usuario",
+      friendshipId: String(r.id),
+      name: prof?.username || "Usuario",
       online: false,
       x: 0,
       z: 0,
