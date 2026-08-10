@@ -1460,6 +1460,7 @@ let multiplayerRaceActive = false;
 let multiplayerIsHost = false;
 let multiplayerMaxPlayers = 2;
 let multiplayerExpectedCount = 2; // cuántos deben tocar el rosa
+let mpLocalReadySent = false;
 let mpWaitingInviteId: string | null = null;
 let multiplayerSelectedCircuit: RaceConfig | null = null;
 let multiplayerLobbyPlayers: MultiplayerLobbyPlayer[] = [];
@@ -1925,8 +1926,10 @@ async function beginRaceAsGuest(row: any) {
       multiplayerSelectedCircuit = config;
   multiplayerIsHost = false;
   multiplayerMaxPlayers = row.max_players || 2;
-  multiplayerExpectedCount = Math.max(2, Number(row.max_players) || 2);
-
+    multiplayerExpectedCount = Math.max(
+    2,
+    Math.min(6, Number(row.max_players) || 2)
+  );
   console.log("Esperados en el rosa:", multiplayerExpectedCount);
 
   multiplayerLobbyPlayers = [
@@ -2155,7 +2158,7 @@ async function tryStartMultiplayerRace() {
   multiplayerRaceActive = false;
 
     const circuitId = multiplayerSelectedCircuit.id;
-  const expected = Math.max(2, accepted.length);
+    const expected = Math.max(2, Math.min(6, accepted.length));
   multiplayerExpectedCount = expected;
 
   const { data: updated, error } = await supabase
@@ -2189,25 +2192,22 @@ async function tryStartMultiplayerRace() {
 
   await startMultiplayerRace(multiplayerSelectedCircuit, accepted, true);
 }
-let mpLocalReadySent = false;
-
 async function markMyselfReadyAtStart() {
   if (!multiplayerRaceActive) return;
   if (countdownActive || raceStarted) return;
+  if (!raceGoingToStart) return;
 
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return;
 
-  const needed = Math.max(2, multiplayerExpectedCount || 2);
-  console.log(
-    "[MP] ready check, needed =",
-    needed,
-    "expected =",
-    multiplayerExpectedCount
-  );
+  // Número fijo de esta partida (2 a 6)
+  const needed = Math.max(2, Math.min(6, multiplayerExpectedCount || 2));
 
+  console.log("[MP] tocar rosa | needed =", needed, "expected =", multiplayerExpectedCount);
+
+  // Si ya me marqué, solo re-consultar
   if (mpLocalReadySent) {
     await checkReadyAndMaybeStart(String(user.id), needed);
     return;
@@ -2215,7 +2215,6 @@ async function markMyselfReadyAtStart() {
 
   mpLocalReadySent = true;
 
-  // Llama a la función SQL (une listos de toda la partida)
   const { data, error } = await supabase.rpc("mark_race_ready");
 
   if (error) {
@@ -2229,7 +2228,6 @@ async function markMyselfReadyAtStart() {
     ok?: boolean;
     ready_count?: number;
     needed?: number;
-    error?: string;
   };
 
   if (!result?.ok) {
@@ -2239,18 +2237,23 @@ async function markMyselfReadyAtStart() {
   }
 
   const readyCount = Number(result.ready_count || 0);
-  const need = Math.max(needed, Number(result.needed || needed));
+  // Usar el mayor entre lo local y lo que dice el servidor (por si max_players quedó bien)
+  const need = Math.max(needed, Number(result.needed || 0), 2);
+
+  console.log("[MP] ready_count =", readyCount, "need =", need);
 
   showMissionMessage(
     `En el punto rosa: ${readyCount} / ${need}. Esperando a todos...`,
     4000
   );
 
-  if (readyCount >= need) {
+  // SOLO iniciar si TODOS llegaron
+  if (readyCount >= need && need >= 2) {
     startRaceCountdown();
     return;
   }
 
+  // Seguir preguntando cada 2s
   clearMpReadyRetry();
   mpReadyRetryTimer = setTimeout(() => {
     if (!multiplayerRaceActive || countdownActive || raceStarted) return;
@@ -2258,28 +2261,46 @@ async function markMyselfReadyAtStart() {
   }, 2000);
 }
 
-async function checkReadyAndMaybeStart(myId: string, needed: number) {
+async function checkReadyAndMaybeStart(_myId: string, needed: number) {
   if (!multiplayerRaceActive || countdownActive || raceStarted) return;
+  if (!raceGoingToStart) return;
 
-  const need = Math.max(2, needed || multiplayerExpectedCount || 2);
+  const need = Math.max(2, Math.min(6, needed || multiplayerExpectedCount || 2));
 
   const { data, error } = await supabase.rpc("mark_race_ready");
-  if (error || !data) return;
+  if (error || !data) {
+    clearMpReadyRetry();
+    mpReadyRetryTimer = setTimeout(() => {
+      if (!multiplayerRaceActive || countdownActive || raceStarted) return;
+      void checkReadyAndMaybeStart(_myId, need);
+    }, 2000);
+    return;
+  }
 
   const result = data as { ok?: boolean; ready_count?: number; needed?: number };
   if (!result.ok) return;
 
   const readyCount = Number(result.ready_count || 0);
-  const finalNeed = Math.max(need, Number(result.needed || need));
+  const finalNeed = Math.max(need, Number(result.needed || 0), 2);
+
+  console.log("[MP] poll ready_count =", readyCount, "finalNeed =", finalNeed);
 
   showMissionMessage(
     `En el punto rosa: ${readyCount} / ${finalNeed}. Esperando a todos...`,
     2500
   );
 
-  if (readyCount >= finalNeed) {
+  if (readyCount >= finalNeed && finalNeed >= 2) {
     startRaceCountdown();
+    return;
   }
+
+  // Seguir esperando
+  clearMpReadyRetry();
+  mpReadyRetryTimer = setTimeout(() => {
+    if (!multiplayerRaceActive || countdownActive || raceStarted) return;
+    void checkReadyAndMaybeStart(_myId, finalNeed);
+  }, 2000);
 }
 async function startMultiplayerRace(
   config: RaceConfig,
@@ -2311,10 +2332,14 @@ async function startMultiplayerRace(
   multiplayerIsHost = asHost;
   multiplayerSelectedCircuit = config;
   multiplayerLobbyPlayers = players;
-    multiplayerExpectedCount = Math.max(
+      multiplayerExpectedCount = Math.max(
     2,
-    players.filter((p) => p.accepted).length || multiplayerMaxPlayers || 2
+    Math.min(
+      6,
+      players.filter((p) => p.accepted).length || multiplayerMaxPlayers || 2
+    )
   );
+  console.log("[MP] partida con jugadores esperados:", multiplayerExpectedCount);
 
   activeRaceConfig = config;
   raceMissionActive = true;
@@ -3438,6 +3463,45 @@ async function syncProfileToCloud() {
     }
   } catch (e) {
     console.warn("Error syncProfileToCloud", e);
+    // Refrescar estado online de amigos cada 20s
+setInterval(async () => {
+  if (!friends.length) return;
+
+  const ids = friends.map((f: any) => f.cloudId).filter(Boolean);
+  if (!ids.length) return;
+
+  const { data: profiles } = await supabase
+    .from("profiles")
+    .select("id, pos_x, pos_z, online_at, map_name")
+    .in("id", ids);
+
+  const ONLINE_MS = 45000;
+  const now = Date.now();
+
+  for (const p of profiles || []) {
+    const friend = friends.find(
+      (f: any) => String(f.cloudId) === String(p.id)
+    ) as any;
+    if (!friend) continue;
+
+    friend.x = Number(p.pos_x) || 0;
+    friend.z = Number(p.pos_z) || 0;
+
+    if (p.online_at) {
+      friend.online = now - new Date(p.online_at).getTime() < ONLINE_MS;
+    } else {
+      friend.online = false;
+    }
+
+    // Avatar en mapa 3D
+    if (friend.online && p.map_name === currentMapName) {
+      const exists = friendAvatars.some(
+        (fa) => String((fa as any).cloudId) === String(p.id)
+      );
+      if (!exists) createFriendAvatar(friend);
+    }
+  }
+}, 20000);
   }
 }
 
@@ -11458,24 +11522,33 @@ if (seg.name) {
 }
   }
 
-  // Amigos en el minimapa
-for (const friend of friends) {
-  const friendPoint = worldToMini(
-    new BABYLON.Vector3(friend.x, 0, friend.z)
-  );
+    // Amigos en el minimapa
+  for (const friend of friends) {
+    // Preferir posición del avatar 3D si existe
+    const fa = friendAvatars.find(
+      (f) => String((f as any).cloudId) === String((friend as any).cloudId)
+    );
 
-  ctx.fillStyle = friend.online ? "lime" : "gray";
-  ctx.beginPath();
-  ctx.arc(friendPoint.x, friendPoint.y, 5, 0, Math.PI * 2);
-  ctx.fill();
+    const fx = fa?.root ? fa.root.position.x : friend.x;
+    const fz = fa?.root ? fa.root.position.z : friend.z;
 
-  if (minimapExpanded) {
-    ctx.fillStyle = "white";
-    ctx.font = "10px Arial";
-    ctx.textAlign = "center";
-    ctx.fillText(friend.name, friendPoint.x, friendPoint.y - 8);
+    // Si sigue en 0,0 y no está online, no dibujar encima del centro
+    if (!friend.online && fx === 0 && fz === 0) continue;
+
+    const friendPoint = worldToMini(new BABYLON.Vector3(fx, 0, fz));
+
+    ctx.fillStyle = friend.online ? "lime" : "gray";
+    ctx.beginPath();
+    ctx.arc(friendPoint.x, friendPoint.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (minimapExpanded) {
+      ctx.fillStyle = "white";
+      ctx.font = "10px Arial";
+      ctx.textAlign = "center";
+      ctx.fillText(friend.name, friendPoint.x, friendPoint.y - 8);
+    }
   }
-}
 // Ruta GPS
 if (gpsRoute.length > 1) {
   ctx.strokeStyle = "#00A8FF";
@@ -24243,10 +24316,12 @@ function updateRaceCircuit() {
 
     if (distStart < 8) {
       if (multiplayerRaceActive) {
-        if (!mpLocalReadySent && !countdownActive && !raceStarted) {
+        // Multijugador: SOLO marcar listo. NUNCA startRaceCountdown aquí.
+        if (!countdownActive && !raceStarted) {
           void markMyselfReadyAtStart();
         }
       } else {
+        // Circuito normal (1 jugador)
         startRaceCountdown();
       }
     }
@@ -25373,11 +25448,15 @@ async function loadFriendsFromCloud() {
 
   const allIds = [...new Set([...friendIds, ...requestIds])];
 
-    let profilesMap: Record<string, string> = {};
+    let profilesMap: Record<
+    string,
+    { username: string; pos_x: number; pos_z: number; online_at: string | null; map_name: string | null }
+  > = {};
+
   if (allIds.length > 0) {
     const { data: profiles, error: profErr } = await supabase
       .from("profiles")
-      .select("id, username")
+      .select("id, username, pos_x, pos_z, online_at, map_name")
       .in("id", allIds);
 
     if (profErr) {
@@ -25385,11 +25464,42 @@ async function loadFriendsFromCloud() {
     }
 
     for (const p of profiles || []) {
-      if (p.id && p.username) {
-        profilesMap[String(p.id)] = p.username;
+      if (p.id) {
+        profilesMap[String(p.id)] = {
+          username: p.username || "Usuario",
+          pos_x: Number(p.pos_x) || 0,
+          pos_z: Number(p.pos_z) || 0,
+          online_at: p.online_at || null,
+          map_name: p.map_name || null,
+        };
       }
     }
   }
+
+  const ONLINE_MS = 45000; // 45 segundos
+
+  friends = accepted.map((r, index) => {
+    const otherId =
+      r.requester_id === user.id ? r.addressee_id : r.requester_id;
+    const key = String(otherId);
+    const prof = profilesMap[key];
+
+    let isOnline = false;
+    if (prof?.online_at) {
+      const t = new Date(prof.online_at).getTime();
+      isOnline = Date.now() - t < ONLINE_MS;
+    }
+
+    return {
+      id: index + 1,
+      cloudId: key,
+      friendshipId: r.id,
+      name: prof?.username || "Usuario",
+      online: isOnline,
+      x: prof?.pos_x ?? 0,
+      z: prof?.pos_z ?? 0,
+    };
+  });
 
   friends = accepted.map((r, index) => {
     const otherId =
@@ -25422,6 +25532,13 @@ async function loadFriendsFromCloud() {
 
   localStorage.setItem("niuwd_friends", JSON.stringify(friends));
   localStorage.setItem("niuwd_friend_requests", JSON.stringify(friendRequests));
+    // Crear avatares y suscribir presencia
+  for (const f of friends) {
+    if (f.online) {
+      createFriendAvatar(f);
+    }
+  }
+  subscribeFriendsPresence();
 }
 let friendshipsChannel: ReturnType<typeof supabase.channel> | null = null;
 
@@ -25647,6 +25764,11 @@ function subscribeFriendsPresence() {
 
   if (!ids.length) return;
 
+  // Quitar canal viejo si existía
+  try {
+    supabase.removeChannel(supabase.channel("friends-presence"));
+  } catch (_) {}
+
   supabase
     .channel("friends-presence")
     .on(
@@ -25661,14 +25783,30 @@ function subscribeFriendsPresence() {
         if (!row?.id) return;
         if (!ids.includes(String(row.id))) return;
 
-        // Solo misma ciudad
+        const friend = friends.find(
+          (f: any) => String(f.cloudId) === String(row.id)
+        ) as any;
+
+        if (friend) {
+          friend.x = Number(row.pos_x) || 0;
+          friend.z = Number(row.pos_z) || 0;
+          friend.online = true; // acaba de publicar presencia
+        }
+
+        // Solo mostrar avatar 3D si está en la misma ciudad
         if (row.map_name && row.map_name !== currentMapName) return;
 
         const fa = friendAvatars.find(
           (f) => String((f as any).cloudId) === String(row.id)
         ) as FriendAvatar | undefined;
 
-        if (!fa?.root) return;
+        if (!fa?.root) {
+          // Si no hay avatar y es amigo online, crearlo
+          if (friend) {
+            createFriendAvatar(friend);
+          }
+          return;
+        }
 
         fa.root.position.x = Number(row.pos_x) || 0;
         fa.root.position.z = Number(row.pos_z) || 0;
@@ -25742,7 +25880,7 @@ function subscribeRaceInvitesRealtime() {
           await beginRaceAsGuest(row);
         }
                 // --- Alguien llegó al rosa (ready_ids) ---
-                if (
+                        if (
           row.status === "started" &&
           Array.isArray(row.ready_ids) &&
           multiplayerRaceActive &&
@@ -25750,8 +25888,10 @@ function subscribeRaceInvitesRealtime() {
           !countdownActive &&
           !raceStarted
         ) {
-          const need = Math.max(2, multiplayerExpectedCount || 2);
-          const uniqueReady = [...new Set(row.ready_ids.map(String))];
+          const need = Math.max(2, Math.min(6, multiplayerExpectedCount || 2));
+          const uniqueReady = [
+            ...new Set((row.ready_ids as any[]).map((x) => String(x))),
+          ];
           const readyCount = uniqueReady.length;
 
           showMissionMessage(
@@ -25759,7 +25899,8 @@ function subscribeRaceInvitesRealtime() {
             3000
           );
 
-          if (readyCount >= need) {
+          // Solo si TODOS tocaron
+          if (readyCount >= need && need >= 2) {
             startRaceCountdown();
           }
         }
