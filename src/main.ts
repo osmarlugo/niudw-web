@@ -6,6 +6,11 @@ import { createRealEstateProject } from "./realEstate";
 
 import { supabase } from "./supabaseClient";
 
+import { inject } from "@vercel/analytics";
+
+// Activa el tracking de visitas
+inject();
+
 supabase.auth.getSession().then(({ data, error }) => {
   if (error) {
     console.error("Supabase error:", error.message);

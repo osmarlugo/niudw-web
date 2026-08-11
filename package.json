@@ -16,6 +16,7 @@
     "@babylonjs/core": "^9.9.1",
     "@babylonjs/loaders": "^9.9.1",
     "@supabase/supabase-js": "^2.112.2",
+    "@vercel/analytics": "^2.0.1",
     "babylonjs": "^8.44.1",
     "babylonjs-loaders": "^9.9.1",
     "earcut": "^3.2.3"
