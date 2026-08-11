@@ -2,9 +2,13 @@ import * as BABYLON from "@babylonjs/core";
 import "@babylonjs/loaders/glTF";
 import earcut from "earcut";
 
+import { inject } from "@vercel/analytics";
 import { createRealEstateProject } from "./realEstate";
 
 import { supabase } from "./supabaseClient";
+
+// Initialize Vercel Web Analytics
+inject();
 
 supabase.auth.getSession().then(({ data, error }) => {
   if (error) {
