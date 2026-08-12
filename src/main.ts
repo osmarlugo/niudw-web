@@ -19482,51 +19482,49 @@ function showTravelLoading(text: string) {
 function hideTravelLoading() {
   travelLoadingScreen.style.display = "none";
 }
-async function buyNiuTravelTicket(
-  cityName: string,
-  cost: number
-) {
-  // Evita dos viajes ejecutándose al mismo tiempo
+async function buyNiuTravelTicket(cityName: string, cost: number) {
   if (niuTravelInProgress) return;
 
-  if (digitalCoins < cost) {
-    showMissionMessage(
-      `No tienes monedas suficientes para viajar a ${cityName}`
-    );
-    return;
-  }
-
-  niuTravelInProgress = true;
-  niuTravelCooldown = true;
-  niuTravelWindowOpen = false;
-
-  digitalCoins -= cost;
-  saveWallet();
-  updateWalletButton();
-    const cityKey =
+  const cityKey =
     cityName === "Manhattan"
       ? "manhattan"
       : cityName === "Beverly Hills"
         ? "beverly-hills"
         : "";
 
-  if (cityKey && !unlockedCities.includes(cityKey)) {
-    unlockedCities.push(cityKey);
+  const alreadyUnlocked = cityKey !== "" && unlockedCities.includes(cityKey);
+
+  // Solo cobra si NO está desbloqueada
+  if (!alreadyUnlocked) {
+    if (digitalCoins < cost) {
+      showMissionMessage(
+        `No tienes monedas suficientes para viajar a ${cityName}`
+      );
+      return;
+    }
+    digitalCoins -= cost;
+    saveWallet();
+    updateWalletButton();
+
+    if (cityKey && !unlockedCities.includes(cityKey)) {
+      unlockedCities.push(cityKey);
+    }
+    localStorage.setItem(
+      "niuwd_unlocked_cities",
+      JSON.stringify(unlockedCities)
+    );
+    savePlayerProfile();
   }
-  savePlayerProfile();
+
+  niuTravelInProgress = true;
+  niuTravelCooldown = true;
+  niuTravelWindowOpen = false;
 
   socialWindow.style.display = "none";
   socialWindow.innerHTML = "";
 
-  showTravelLoading(
-    `Cargando mapa de ${cityName}...`
-  );
-
-  // Deja que la pantalla de carga se dibuje antes
-  // de comenzar a borrar y cargar el mapa.
-  await new Promise((resolve) =>
-    setTimeout(resolve, 150)
-  );
+  showTravelLoading(`Cargando mapa de ${cityName}...`);
+  await new Promise((resolve) => setTimeout(resolve, 150));
 
   try {
     if (cityName === "Manhattan") {
@@ -19535,20 +19533,11 @@ async function buyNiuTravelTicket(
       await travelToBeverlyHills();
     }
   } catch (error) {
-    console.error(
-      `Error viajando a ${cityName}:`,
-      error
-    );
-
-    showMissionMessage(
-      `No se pudo cargar ${cityName}.`,
-      5000
-    );
+    console.error(`Error viajando a ${cityName}:`, error);
+    showMissionMessage(`No se pudo cargar ${cityName}.`, 5000);
   } finally {
     hideTravelLoading();
-
     niuTravelInProgress = false;
-
     setTimeout(() => {
       niuTravelCooldown = false;
     }, 3000);
@@ -19580,6 +19569,9 @@ function openNiuTravelWindow() {
 
   let currentCityText = "Lima";
   let destinationsHtml = "";
+
+  const manhattanUnlocked = unlockedCities.includes("manhattan");
+const beverlyUnlocked = unlockedCities.includes("beverly-hills");
 
   // =========================
   // PARQUE KENNEDY
@@ -20948,7 +20940,37 @@ function updateFuelWarningSystem() {
     }
   }
 }
+function restoreUnlockedCitiesFromLocal() {
+  try {
+    // 1) Perfil completo
+    const profileRaw = localStorage.getItem("niuwd_player_profile");
+    if (profileRaw) {
+      const profile = JSON.parse(profileRaw);
+      if (Array.isArray(profile.unlockedCities) && profile.unlockedCities.length) {
+        unlockedCities = profile.unlockedCities.slice();
+        return;
+      }
+    }
+
+    // 2) Clave dedicada (la que escribe el login / cloud)
+    const raw = localStorage.getItem("niuwd_unlocked_cities");
+    if (raw) {
+      const list = JSON.parse(raw);
+      if (Array.isArray(list) && list.length) {
+        unlockedCities = list.slice();
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  if (!unlockedCities.includes("miraflores")) {
+    unlockedCities.unshift("miraflores");
+  }
+}
 async function setupInitialGame(city: "lima" | "maturin") {
+  restoreUnlockedCitiesFromLocal(); // local primero
+  await loadProfileFromCloud();     // nube pisa/actualiza si hay sesión
   // Cargar progreso desde Supabase (gasolina, monedas, ciudades)
   await loadProfileFromCloud();
   await loadFriendsFromCloud();
