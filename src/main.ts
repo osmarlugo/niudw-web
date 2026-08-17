@@ -502,6 +502,60 @@ let realEstateEntryWindowOpen = false;
 let realEstateEntryCooldown = false;
 let realEstateTravelInProgress = false;
 
+// =========================
+// DEEP LINK → NIU RESIDENCIAL
+// =========================
+const REAL_ESTATE_GOTO_KEY = "niuwd_goto_real_estate";
+
+function getUrlGotoParam(): string | null {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("goto");
+  } catch {
+    return null;
+  }
+}
+
+function shouldEnterRealEstateFromLink(): boolean {
+  const goto = getUrlGotoParam();
+  if (goto === "olivar" || goto === "real-estate" || goto === "residencial") {
+    return true;
+  }
+  // Por si el usuario tuvo que loguearse: guardamos la intención
+  try {
+    return sessionStorage.getItem(REAL_ESTATE_GOTO_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function rememberRealEstateDeepLink() {
+  try {
+    sessionStorage.setItem(REAL_ESTATE_GOTO_KEY, "1");
+  } catch {
+    // ignore
+  }
+}
+
+function clearRealEstateDeepLink() {
+  try {
+    sessionStorage.removeItem(REAL_ESTATE_GOTO_KEY);
+  } catch {
+    // ignore
+  }
+
+  // Quitar ?goto=... de la barra de direcciones (sin recargar)
+  try {
+    const url = new URL(window.location.href);
+    if (url.searchParams.has("goto")) {
+      url.searchParams.delete("goto");
+      window.history.replaceState({}, "", url.toString());
+    }
+  } catch {
+    // ignore
+  }
+}
+
 // Evita que la ventana se abra repetidamente
 // mientras el avatar o el auto continúan dentro del aro.
 let salesBoothAuraWasTouched = false;
@@ -21111,6 +21165,11 @@ if (city === "maturin") {
   }
 
   camera.target = player.position;
+    // =========================
+  // DEEP LINK: NIU Residencial
+  // =========================
+  // Si el usuario llegó con ?goto=olivar, entra directo al proyecto.
+  void enterRealEstateFromDeepLinkIfNeeded();
 }
 function createSalesBoothAtLonLat(
   lon: number,
@@ -22857,6 +22916,12 @@ function getSessionUser(): string | null {
 
 function showAuthScreen(mode: "register" | "login" = "register") {
   const session = getSessionUser();
+    // Si viene de un link compartido, recordar la intención
+  // por si el usuario tiene que loguearse primero.
+  const goto = getUrlGotoParam();
+  if (goto === "olivar" || goto === "real-estate" || goto === "residencial") {
+    rememberRealEstateDeepLink();
+  }
   if (session) {
     if (typeof worldChatUsername !== "undefined") {
       worldChatUsername = session;
@@ -23395,6 +23460,23 @@ function getNearestGpsRoadPoint(pos: BABYLON.Vector3) {
 
   bestPoint.y = 0.22;
   return bestPoint;
+}
+/**
+ * Si la URL trae ?goto=olivar (o se guardó la intención al loguearse),
+ * entra directo al proyecto sin pasar por Miraflores visible.
+ */
+async function enterRealEstateFromDeepLinkIfNeeded() {
+  if (!shouldEnterRealEstateFromLink()) {
+    return false;
+  }
+
+  // Limpiar para que un refresh no vuelva a forzar la entrada
+  clearRealEstateDeepLink();
+
+  // Ya tenemos avatar/auto creados por setupInitialGame.
+  // travelToRealEstateProject limpia el mapa y carga el residencial.
+  await travelToRealEstateProject();
+  return true;
 }
 async function travelToRealEstateProject() {
   showTravelLoading(
